@@ -1,21 +1,127 @@
 # Jarvis
 
-An AI assistant project.
+Persönlicher KI-Assistent für die Kommandozeile mit echtem Tool-Use, Sprachein- und -ausgabe
+und Smart-Home-Anbindung. Läuft auf **Windows** und **macOS** (Linux best effort).
 
-## Requirements
-
-- Python 3.10+
-
-## Setup
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+```
+Jarvis > Schalte das Licht im Bad aus und sag mir, welche Termine ich morgen habe
+  ⚙ homeassistant {"action": "list_entities", "search": "bad"}
+  ✓ 2 Entitäten:
+  ⚙ homeassistant {"action": "call_service", "entity_id": "light.licht_bad", "service": "turn_off"}
+  ✓ 'light.turn_off' ausgeführt. Neuer Zustand: - Licht Bad [light.licht_bad]: off
+  ⚙ calendar {"action": "list", "days": 2}
+  ✓ Termine der nächsten 2 Tage:
+╭─ Jarvis ─────────────────────────────────────────────────────╮
+│ Das Licht im Bad ist aus. Morgen hast du um 14 Uhr Zahnarzt. │
+╰──────────────────────────────────────────────────────────────╯
 ```
 
-## Usage
+## Architektur
+
+```
+main.py                 CLI (rich), Sprachbefehl "v", Bestätigungsdialoge
+core/agent.py           Agent-Loop: LLM ↔ Tools, Gesprächsverlauf, Fallback-Provider
+core/llm/               Provider-Abstraktion
+  base.py                 neutrale Typen (ToolCall, LLMResponse, Verlaufsformat)
+  anthropic_provider.py   Claude (Standard)        – anthropic SDK
+  openai_provider.py      OpenAI + Ollama (lokal)  – openai SDK, Ollama über /v1
+  gemini_provider.py      Google Gemini            – google-genai SDK
+core/platform_utils.py  OS-Abstraktion: TTS, Benachrichtigungen, URL öffnen
+core/voice.py           Sprachausgabe mit Barge-in (Reinreden unterbricht)
+core/voice_input.py     Spracheingabe (Mikrofon → Google Speech Recognition)
+tools/                  Tools mit JSON-Schema – das LLM wählt Tool und Argumente selbst
+  system, calendar, homeassistant, spotify, mail, web_search, browser
+tests/                  pytest (Agent-Loop, Provider-Konvertierung, Tools)
+```
+
+Das LLM bekommt alle Tool-Schemas und entscheidet selbst, welche Tools es mit welchen
+Argumenten aufruft. Mehrere Tool-Aufrufe pro Anfrage und Mehrfach-Runden sind möglich.
+Aktionen mit Außenwirkung (z.B. E-Mail senden) fragen vorher in der Konsole nach.
+
+## Installation
+
+Voraussetzungen: Python 3.11+ und [uv](https://docs.astral.sh/uv/).
 
 ```bash
-python main.py
+git clone https://github.com/Alpaka05/jarvis.git
+cd jarvis
+uv sync                       # erstellt .venv und installiert alles
+cp .env.example .env          # Windows: copy .env.example .env
 ```
+
+Ohne uv: `python -m venv .venv`, aktivieren, `pip install -r requirements.txt`.
+
+Optionales Extra für autonome Browser-Aufgaben (browser-use):
+
+```bash
+uv sync --extra browser
+uv run playwright install chromium
+```
+
+## Konfiguration (.env)
+
+| Variable | Bedeutung |
+|---|---|
+| `LLM_PROVIDER` | `anthropic` (Standard), `openai`, `gemini` oder `ollama` |
+| `LLM_FALLBACK_PROVIDER` | wird genutzt, wenn der Haupt-Provider fehlt oder ausfällt (Standard `ollama`) |
+| `LLM_EFFORT` | Denk-Aufwand für Claude: `low` … `max` (Standard `medium`) |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude, Standardmodell `claude-opus-5` |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini |
+| `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
+| `USER_NAME` | dein Name, damit Jarvis dich kennt |
+| `HA_URL`, `HA_TOKEN` | Home Assistant (Long-Lived Access Token) |
+| `EMAIL_*`, `IMAP_*`, `SMTP_*` | E-Mail-Konto |
+| `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | Spotify Web API (siehe unten) |
+| `TTS_ENGINE`, `EDGE_VOICE`, `EDGE_RATE`, `EDGE_PITCH` | Sprachausgabe: `edge` (neuronal, online) oder `system` (offline) |
+| `TTS_ENABLED`, `VOICE_NAME`, `LANGUAGE` | Sprachausgabe an/aus, Systemstimme, Sprache |
+
+### Spotify
+
+Die Spotify Web API läuft auf allen Plattformen, braucht aber eine eigene App unter
+[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) (Redirect-URI
+`http://127.0.0.1:8888/callback` eintragen) und Spotify Premium für die Wiedergabesteuerung.
+Beim ersten Aufruf öffnet sich der Browser zur Anmeldung, das Token wird in `data/.spotify_cache`
+gespeichert. Ohne Web-API-Konfiguration nutzt Jarvis auf dem Mac AppleScript.
+
+### Sprachausgabe
+
+Standard ist `TTS_ENGINE=edge`: die neuronalen Microsoft-Edge-Stimmen (kostenlos, online, auf
+Windows und Mac identisch). Voreingestellt ist `de-DE-ConradNeural`, eine tiefe männliche Stimme.
+Weitere Kandidaten: `de-DE-KillianNeural`, `de-DE-FlorianMultilingualNeural`, `en-GB-RyanNeural`
+(britischer Jarvis). Mit `EDGE_RATE` und `EDGE_PITCH` lassen sich Tempo und Tonhöhe anpassen.
+
+```bash
+uv run python scripts/voice_test.py --all            # alle Kandidaten anhören
+uv run python scripts/voice_test.py de-DE-KillianNeural
+```
+
+Ohne Internet oder mit `TTS_ENGINE=system` wird die Betriebssystem-Stimme genutzt:
+
+- **Windows**: SAPI-Stimmen, deutsch z.B. `Microsoft Hedda Desktop`.
+- **macOS**: `say`-Stimmen, z.B. `Anna`, `Markus`, `Petra`.
+- Ohne `VOICE_NAME` wird automatisch eine Stimme passend zu `LANGUAGE` gewählt.
+
+## Starten
+
+```bash
+uv run python main.py
+```
+
+Befehle in der Konsole: `v` (Spracheingabe), `reset` (Verlauf löschen), `hilfe`, `exit`.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+## Roadmap
+
+- [x] Plattformschicht Windows/macOS (TTS, Benachrichtigungen, Browser, Spotify Web API)
+- [x] Echtes Function Calling mit Provider-Abstraktion (Claude, OpenAI, Gemini, Ollama)
+- [x] Gesprächsverlauf innerhalb einer Sitzung
+- [ ] Langzeitgedächtnis (Fakten über den Nutzer, SQLite)
+- [ ] Wake-Word („Hey Jarvis“) und lokale Spracherkennung (faster-whisper)
+- [ ] Weitere Tools: Dateisystem, Timer/Erinnerungen, Notion, Wetter-API
+- [ ] Kalender-Backends (CalDAV, Google Calendar)

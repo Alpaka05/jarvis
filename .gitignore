@@ -41,3 +41,15 @@ venv.bak/
 *.swp
 *.swo
 .DS_Store
+
+# uv / virtualenv
+.venv/
+uv.lock
+
+# Jarvis runtime data
+data/.spotify_cache
+data/*.json
+!data/.gitkeep
+
+# Tests
+.pytest_cache/

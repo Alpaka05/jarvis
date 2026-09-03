@@ -1,43 +1,66 @@
-import requests
 import urllib.parse
+
+import requests
+
 from tools.base import BaseTool, ToolResult
 
+
 class SearchTool(BaseTool):
-    name = "search"
-    description = "Sucht im Web nach aktuellen Informationen, Wetter oder Nachrichten."
+    name = "web_search"
+    description = (
+        "Websuche (DuckDuckGo) für aktuelle Informationen, Nachrichten, Wetter, Fakten. "
+        "Liefert Titel, Link und Kurzbeschreibung der Top-Treffer."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Suchanfrage, möglichst präzise (z.B. 'Wetter Berlin morgen')."},
+            "max_results": {"type": "integer", "description": "Anzahl Treffer (Standard 5, max 10)."},
+        },
+        "required": ["query"],
+    }
 
-    def search_web(self, query: str) -> ToolResult:
+    def search_web(self, query: str, max_results: int = 5) -> ToolResult:
         try:
-            # Simple DuckDuckGo Instant Answer / HTML search query fallback
-            encoded_query = urllib.parse.quote(query)
-            url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
-            headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+            from bs4 import BeautifulSoup
 
-            resp = requests.get(url, headers=headers, timeout=5)
-            if resp.status_code == 200:
-                # Basic text extract from HTML response
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(resp.text, "html.parser")
-                results = []
-                for a in soup.find_all("a", class_="result__snippet", limit=4):
-                    results.append(a.get_text().strip())
+            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jarvis/0.2"}
+            resp = requests.get(url, headers=headers, timeout=8)
+            if resp.status_code != 200:
+                return ToolResult.fail(f"Suche fehlgeschlagen (HTTP {resp.status_code}).")
 
-                if results:
-                    output = f"Suchergebnisse für '{query}':\n" + "\n".join([f"- {r}" for r in results])
-                    return ToolResult(success=True, output=output, data=results)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            results = []
+            for res in soup.select("div.result")[:max_results]:
+                title_el = res.select_one("a.result__a")
+                snippet_el = res.select_one(".result__snippet")
+                if not title_el:
+                    continue
+                href = title_el.get("href", "")
+                # DuckDuckGo verpackt Links als Redirect (uddg=...)
+                if "uddg=" in href:
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                    href = qs.get("uddg", [href])[0]
+                results.append(
+                    {
+                        "title": title_el.get_text(" ", strip=True),
+                        "url": href,
+                        "snippet": snippet_el.get_text(" ", strip=True) if snippet_el else "",
+                    }
+                )
 
-            return ToolResult(
-                success=True,
-                output=f"Websuche ausgeführt für: '{query}'. (Tipp: Für Wetter/Nachrichten bitte spezifische Orte nennen)."
-            )
+            if not results:
+                return ToolResult.ok(f"Keine Treffer für '{query}'.", data=[])
+
+            lines = [f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}" for i, r in enumerate(results, 1)]
+            return ToolResult.ok(f"Suchergebnisse für '{query}':\n" + "\n".join(lines), data=results)
         except Exception as e:
-            return ToolResult(
-                success=True,
-                output=f"Suchanfrage für '{query}' aufgenommen. (Simuliertes Suchergebnis: Keine Netzwerkfehler)."
-            )
+            return ToolResult.fail(f"Websuche fehlgeschlagen: {e}")
 
     def execute(self, query: str = "", **kwargs) -> ToolResult:
-        search_query = query or kwargs.get("q", "")
-        if not search_query:
-            return ToolResult(success=False, output="Bitte gib einen Suchbegriff an ('query').")
-        return self.search_web(search_query)
+        q = (query or kwargs.get("q") or "").strip()
+        if not q:
+            return ToolResult.fail("Bitte eine Suchanfrage angeben ('query').")
+        n = max(1, min(int(kwargs.get("max_results") or 5), 10))
+        return self.search_web(q, n)

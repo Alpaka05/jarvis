@@ -1,96 +1,131 @@
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from config import config
 from tools.base import BaseTool, ToolResult
 
+
 class CalendarTool(BaseTool):
     name = "calendar"
-    description = "Erstellt, listet und verwaltet Kalendereinträge und Termine."
+    description = (
+        "Lokaler Kalender: Termine auflisten, anlegen oder löschen. "
+        "Datumsangaben immer als YYYY-MM-DD, Uhrzeiten als HH:MM (24h). "
+        "Relative Angaben wie 'morgen' oder 'nächsten Freitag' vorher anhand des heutigen Datums umrechnen."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "add", "delete"],
+                "description": "list = Termine anzeigen, add = Termin anlegen, delete = Termin löschen",
+            },
+            "days": {
+                "type": "integer",
+                "description": "Für list: Zeitraum in Tagen ab heute (Standard 7).",
+            },
+            "title": {"type": "string", "description": "Titel des Termins (add/delete)."},
+            "date": {"type": "string", "description": "Datum YYYY-MM-DD (add/delete)."},
+            "time": {"type": "string", "description": "Uhrzeit HH:MM (add, Standard 10:00)."},
+            "description": {"type": "string", "description": "Optionale Notiz zum Termin (add)."},
+        },
+        "required": ["action"],
+    }
 
-    def __init__(self):
-        self.calendar_file = config.DATA_DIR / "calendar.json"
+    def __init__(self, calendar_file: Optional[Path] = None):
+        self.calendar_file = calendar_file or (config.DATA_DIR / "calendar.json")
+        self.calendar_file.parent.mkdir(parents=True, exist_ok=True)
         if not self.calendar_file.exists():
-            self.calendar_file.write_text(json.dumps([], indent=2), encoding="utf-8")
+            self.calendar_file.write_text("[]", encoding="utf-8")
+
+    # ── Persistenz ───────────────────────────────────────────────────────────
 
     def _load_events(self) -> List[Dict[str, Any]]:
         try:
-            content = self.calendar_file.read_text(encoding="utf-8")
-            return json.loads(content)
+            return json.loads(self.calendar_file.read_text(encoding="utf-8"))
         except Exception:
             return []
 
     def _save_events(self, events: List[Dict[str, Any]]):
         self.calendar_file.write_text(json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    # ── Aktionen ─────────────────────────────────────────────────────────────
+
     def list_events(self, days: int = 7) -> ToolResult:
         events = self._load_events()
         now = datetime.now()
-        end_time = now + timedelta(days=days)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=days)
 
         upcoming = []
         for ev in events:
             try:
-                ev_time = datetime.fromisoformat(ev.get("datetime"))
-                if now <= ev_time <= end_time:
-                    upcoming.append(ev)
-            except ValueError:
+                ev_time = datetime.fromisoformat(ev["datetime"])
+            except (KeyError, ValueError, TypeError):
                 continue
+            if start <= ev_time < end:
+                upcoming.append(ev)
+        upcoming.sort(key=lambda x: x["datetime"])
 
-        upcoming.sort(key=lambda x: x.get("datetime"))
         if not upcoming:
-            return ToolResult(
-                success=True,
-                output=f"Keine Termine für die nächsten {days} Tage gefunden.",
-                data=[]
-            )
+            return ToolResult.ok(f"Keine Termine in den nächsten {days} Tagen.", data=[])
 
-        formatted = "\n".join(
-            [f"- [{ev['datetime']}] {ev['title']} ({ev.get('description', 'Keine Beschreibung')})" for ev in upcoming]
-        )
-        return ToolResult(
-            success=True,
-            output=f"Anstehende Termine:\n{formatted}",
-            data=upcoming
-        )
+        lines = []
+        for ev in upcoming:
+            dt = datetime.fromisoformat(ev["datetime"])
+            note = f" – {ev['description']}" if ev.get("description") else ""
+            lines.append(f"- {dt.strftime('%a %d.%m.%Y %H:%M')}: {ev['title']}{note}")
+        return ToolResult.ok(f"Termine der nächsten {days} Tage:\n" + "\n".join(lines), data=upcoming)
 
     def add_event(self, title: str, date_str: str, time_str: str = "10:00", description: str = "") -> ToolResult:
-        events = self._load_events()
         try:
-            full_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").isoformat()
+            full_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
         except ValueError:
-            return ToolResult(
-                success=False,
-                output="Ungültiges Datumsformat! Bitte nutze YYYY-MM-DD für Datum und HH:MM für Uhrzeit."
-            )
+            return ToolResult.fail("Ungültiges Format. Datum als YYYY-MM-DD, Uhrzeit als HH:MM angeben.")
 
+        events = self._load_events()
         new_event = {
             "title": title,
-            "datetime": full_dt,
+            "datetime": full_dt.isoformat(),
             "description": description,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
         }
         events.append(new_event)
         self._save_events(events)
-
-        return ToolResult(
-            success=True,
-            output=f"Termin '{title}' am {date_str} um {time_str} Uhr erfolgreich eingetragen.",
-            data=new_event
+        return ToolResult.ok(
+            f"Termin '{title}' am {full_dt.strftime('%d.%m.%Y um %H:%M')} Uhr eingetragen.", data=new_event
         )
+
+    def delete_event(self, title: str, date_str: str = "") -> ToolResult:
+        events = self._load_events()
+        title_l = title.lower().strip()
+        remaining, removed = [], []
+        for ev in events:
+            matches_title = title_l in ev.get("title", "").lower()
+            matches_date = (not date_str) or ev.get("datetime", "").startswith(date_str)
+            (removed if matches_title and matches_date else remaining).append(ev)
+        if not removed:
+            return ToolResult.fail(f"Kein Termin mit Titel '{title}' gefunden.")
+        self._save_events(remaining)
+        names = ", ".join(f"'{ev['title']}' ({ev['datetime'][:16]})" for ev in removed)
+        return ToolResult.ok(f"{len(removed)} Termin(e) gelöscht: {names}", data=removed)
 
     def execute(self, action: str = "list", **kwargs) -> ToolResult:
         if action == "list":
-            days = kwargs.get("days", 7)
-            return self.list_events(days=days)
-        elif action == "add":
-            title = kwargs.get("title", "")
-            date_str = kwargs.get("date", datetime.now().strftime("%Y-%m-%d"))
-            time_str = kwargs.get("time", "10:00")
-            description = kwargs.get("description", "")
+            days = int(kwargs.get("days") or 7)
+            return self.list_events(days=max(1, days))
+        if action == "add":
+            title = (kwargs.get("title") or "").strip()
             if not title:
-                return ToolResult(success=False, output="Bitte gib einen Titel für den Termin an.")
-            return self.add_event(title, date_str, time_str, description)
-        else:
-            return ToolResult(success=False, output=f"Unbekannte Aktion für Kalender: {action}")
+                return ToolResult.fail("Bitte einen Titel für den Termin angeben.")
+            date_str = kwargs.get("date") or datetime.now().strftime("%Y-%m-%d")
+            time_str = kwargs.get("time") or "10:00"
+            return self.add_event(title, date_str, time_str, kwargs.get("description") or "")
+        if action == "delete":
+            title = (kwargs.get("title") or "").strip()
+            if not title:
+                return ToolResult.fail("Bitte den Titel des zu löschenden Termins angeben.")
+            return self.delete_event(title, kwargs.get("date") or "")
+        return ToolResult.fail(f"Unbekannte Kalender-Aktion: {action}")
