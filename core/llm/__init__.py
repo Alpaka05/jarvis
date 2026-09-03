@@ -8,15 +8,46 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from config import config
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall
+from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage
 
 PROVIDER_NAMES = ("anthropic", "openai", "gemini", "ollama")
+
+# USD pro 1 Mio. Tokens: (Eingabe, Ausgabe). Cache-Lesen kostet ~10 % der Eingabe, Cache-Schreiben ~125 %.
+PRICING = {
+    "claude-opus-5": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-opus-4-7": (5.00, 25.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gemini-2.5-flash": (0.30, 2.50),
+}
+
+
+def estimate_cost_usd(model: str, usage: Usage) -> Optional[float]:
+    """Grobe Kostenschätzung in USD; None für unbekannte oder lokale Modelle."""
+    price = PRICING.get(model)
+    if price is None:
+        return None
+    inp, out = price
+    return (
+        usage.input_tokens * inp
+        + usage.cache_read_tokens * inp * 0.10
+        + usage.cache_write_tokens * inp * 1.25
+        + usage.output_tokens * out
+    ) / 1_000_000
+
 
 __all__ = [
     "LLMError",
     "LLMProvider",
     "LLMResponse",
     "ToolCall",
+    "Usage",
+    "PRICING",
+    "estimate_cost_usd",
     "PROVIDER_NAMES",
     "build_provider",
     "is_configured",

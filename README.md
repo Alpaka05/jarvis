@@ -27,16 +27,29 @@ core/llm/               Provider-Abstraktion
   openai_provider.py      OpenAI + Ollama (lokal)  – openai SDK, Ollama über /v1
   gemini_provider.py      Google Gemini            – google-genai SDK
 core/platform_utils.py  OS-Abstraktion: TTS, Benachrichtigungen, URL öffnen
-core/voice.py           Sprachausgabe mit Barge-in (Reinreden unterbricht)
-core/voice_input.py     Spracheingabe (Mikrofon → Google Speech Recognition)
+core/voice.py           Sprachausgabe: satzweise Edge-TTS-Pipeline, Wiedergabe im Prozess, sofort unterbrechbar
+core/voice_input.py     Spracheingabe (Silero-VAD → Google Speech Recognition)
+core/wakeword.py        Wake-Word „Hey Jarvis“ (openWakeWord, lokal)
+core/voice_loop.py      Sprachmodus: lauschen, bestätigen, aufnehmen, antworten, Nachfrage-Fenster
 tools/                  Tools mit JSON-Schema – das LLM wählt Tool und Argumente selbst
-  system, calendar, homeassistant, spotify, mail, web_search, browser
+  memory, system, calendar, homeassistant, spotify, mail, web_search (search/news/read_url), browser
 tests/                  pytest (Agent-Loop, Provider-Konvertierung, Tools)
 ```
 
 Das LLM bekommt alle Tool-Schemas und entscheidet selbst, welche Tools es mit welchen
 Argumenten aufruft. Mehrere Tool-Aufrufe pro Anfrage und Mehrfach-Runden sind möglich.
 Aktionen mit Außenwirkung (z.B. E-Mail senden) fragen vorher in der Konsole nach.
+
+### Gedächtnis
+
+Jarvis hat ein Langzeitgedächtnis in `data/jarvis.db` (SQLite, nicht im Repo):
+
+- **Fakten** über dich und deine Umgebung (Name, Vorlieben, Personen, Geräte-IDs, Gewohnheiten).
+  Das LLM speichert sie selbst über das `memory`-Tool, wenn du etwas Dauerhaftes erzählst, und
+  bekommt sie bei jeder Anfrage im System-Prompt mit. Du kannst auch explizit sagen
+  „Merk dir, dass …“, „Vergiss, dass …“ oder in der Konsole `memory` tippen.
+- **Gesprächsprotokoll**: alle Nutzer- und Jarvis-Nachrichten werden mitgeschrieben, damit Fragen
+  wie „Worüber haben wir gestern gesprochen?“ beantwortbar sind.
 
 ## Installation
 
@@ -69,11 +82,13 @@ uv run playwright install chromium
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini |
 | `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
-| `USER_NAME` | dein Name, damit Jarvis dich kennt |
+| `USER_NAME`, `SALUTATION` | dein Name; Anrede am Anfang jeder Antwort (z.B. `Sir`) |
+| `TAVILY_API_KEY` | optional: bessere Websuche über Tavily, sonst kostenlose ddgs-Metasuche |
 | `HA_URL`, `HA_TOKEN` | Home Assistant (Long-Lived Access Token) |
 | `EMAIL_*`, `IMAP_*`, `SMTP_*` | E-Mail-Konto |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | Spotify Web API (siehe unten) |
 | `TTS_ENGINE`, `EDGE_VOICE`, `EDGE_RATE`, `EDGE_PITCH` | Sprachausgabe: `edge` (neuronal, online) oder `system` (offline) |
+| `VOICE_MODE_ON_START`, `WAKE_WORD_THRESHOLD`, `FOLLOW_UP_SECONDS`, `ACK_STYLE`, `ACK_PHRASE` | Sprachmodus: Autostart, Empfindlichkeit, Nachfrage-Fenster, Bestätigung (Chime und/oder gesprochenes „Ja?“) |
 | `TTS_ENABLED`, `VOICE_NAME`, `LANGUAGE` | Sprachausgabe an/aus, Systemstimme, Sprache |
 
 ### Spotify
@@ -105,10 +120,22 @@ Ohne Internet oder mit `TTS_ENGINE=system` wird die Betriebssystem-Stimme genutz
 ## Starten
 
 ```bash
-uv run python main.py
+uv run python main.py            # Texteingabe
+uv run python main.py --voice    # direkt im Sprachmodus („Hey Jarvis“)
 ```
 
-Befehle in der Konsole: `v` (Spracheingabe), `reset` (Verlauf löschen), `hilfe`, `exit`.
+Befehle in der Konsole: `wake` (Sprachmodus), `v` (einmalige Spracheingabe), `spotify login`,
+`memory`, `reset`, `hilfe`, `exit`.
+
+### Sprachmodus
+
+Mit `wake`, `--voice` oder `VOICE_MODE_ON_START=true` lauscht Jarvis dauerhaft am Mikrofon.
+Die Wake-Word-Erkennung läuft lokal über [openWakeWord](https://github.com/dscripka/openWakeWord)
+mit dem vortrainierten Modell „Hey Jarvis“ (Modelle werden beim ersten Start automatisch geladen).
+
+Ablauf: „Hey Jarvis“ → Bestätigungston → Frage stellen → Antwort wird vorgelesen → ein paar
+Sekunden Nachfrage-Fenster ohne Wake-Word → zurück zum Lauschen. Reinreden unterbricht die Ausgabe.
+Empfindlichkeit über `WAKE_WORD_THRESHOLD` (0.3 = empfindlicher, 0.7 = strenger).
 
 ## Tests
 
@@ -121,7 +148,8 @@ uv run pytest
 - [x] Plattformschicht Windows/macOS (TTS, Benachrichtigungen, Browser, Spotify Web API)
 - [x] Echtes Function Calling mit Provider-Abstraktion (Claude, OpenAI, Gemini, Ollama)
 - [x] Gesprächsverlauf innerhalb einer Sitzung
-- [ ] Langzeitgedächtnis (Fakten über den Nutzer, SQLite)
-- [ ] Wake-Word („Hey Jarvis“) und lokale Spracherkennung (faster-whisper)
+- [x] Langzeitgedächtnis (Fakten über den Nutzer + durchsuchbares Gesprächsprotokoll, SQLite)
+- [x] Wake-Word („Hey Jarvis“) mit openWakeWord, Sprachmodus mit Nachfrage-Fenster
+- [ ] Lokale Spracherkennung (faster-whisper) statt Google
 - [ ] Weitere Tools: Dateisystem, Timer/Erinnerungen, Notion, Wetter-API
 - [ ] Kalender-Backends (CalDAV, Google Calendar)

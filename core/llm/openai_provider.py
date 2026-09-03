@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -107,7 +107,15 @@ class OpenAICompatProvider(LLMProvider):
                 args = {"_raw": raw_args}
             tool_calls.append(ToolCall(id=tc.id or f"call_{i}", name=fn.name, arguments=args))
 
-        return LLMResponse(text=text, tool_calls=tool_calls, raw=None, stop_reason=choice.finish_reason or "")
+        usage = Usage(calls=1)
+        if getattr(response, "usage", None):
+            usage.input_tokens = response.usage.prompt_tokens or 0
+            usage.output_tokens = response.usage.completion_tokens or 0
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", 0) or 0
+            usage.input_tokens -= cached
+            usage.cache_read_tokens = cached
+        return LLMResponse(text=text, tool_calls=tool_calls, raw=None, stop_reason=choice.finish_reason or "", usage=usage)
 
 
 def make_ollama_provider(host: str, model: str) -> OpenAICompatProvider:

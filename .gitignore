@@ -53,3 +53,12 @@ data/*.json
 
 # Tests
 .pytest_cache/
+
+# Windows-Verknüpfungen (enthalten absolute Pfade)
+launch/*.lnk
+launch/last_start.log
+
+# Gedächtnis-Datenbank
+data/*.db
+data/*.db-journal
+data/ack_*.mp3

@@ -23,12 +23,12 @@ if sys.platform.startswith("win"):
 console = Console()
 
 BANNER = """
-[bold cyan]    ██╗ █████╗ ██████╗ ██╗   ██╗██╗███╗   ██╗
-    ██║██╔══██╗██╔══██╗██║   ██║██║████╗  ██║
-    ██║███████║██████╔╝██║   ██║██║██╔██╗ ██║
-██   ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║██║╚██╗██║
-╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║██║ ╚████║
- ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚═╝  ╚═══╝[/bold cyan]
+[bold cyan]     ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗
+     ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝
+     ██║███████║██████╔╝██║   ██║██║███████╗
+██   ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║
+╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║
+ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝[/bold cyan]
     [bold white]Dein persönlicher KI-Assistent[/bold white]  [dim]({platform})[/dim]
 """
 
@@ -47,8 +47,11 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
     else:
         llm_line = "[red]nicht konfiguriert[/red]"
 
-    spotify_backend = agent.tools["spotify"].backend() if "spotify" in agent.tools else "none"
+    spotify_tool = agent.tools.get("spotify")
+    spotify_backend = spotify_tool.backend() if spotify_tool else "none"
     spotify_label = {"web": "Web API", "applescript": "AppleScript (Mac)", "none": "nicht eingerichtet"}[spotify_backend]
+    if spotify_backend == "web" and not spotify_tool.is_linked():
+        spotify_label = "Web API, [yellow]noch nicht verknüpft – tippe 'spotify login'[/yellow]"
 
     rows = [
         f"🤖 [bold yellow]LLM:[/bold yellow] {llm_line}",
@@ -57,8 +60,9 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
         f"✉️  [bold yellow]E-Mail:[/bold yellow] {_yes_no(bool(config.EMAIL_ACCOUNT), config.EMAIL_ACCOUNT, 'nicht konfiguriert')}",
         f"🎵 [bold yellow]Spotify:[/bold yellow] {_yes_no(spotify_backend != 'none', spotify_label, spotify_label)}",
         f"🔍 [bold yellow]Websuche:[/bold yellow] [green]DuckDuckGo[/green]",
+        f"🧠 [bold yellow]Gedächtnis:[/bold yellow] [green]{agent.memory.count_facts() if agent.memory else 0} Fakten[/green] [dim]({config.MEMORY_DB.name}, tippe 'memory')[/dim]",
         f"🔊 [bold yellow]Sprachausgabe:[/bold yellow] {_yes_no(voice.enabled, voice.label, 'deaktiviert')}",
-        f"🎤 [bold yellow]Spracheingabe:[/bold yellow] [green]bereit[/green] [dim](tippe 'v')[/dim]",
+        f"🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
     ]
     for note in agent.notes:
         rows.append(f"⚠️  [yellow]{note}[/yellow]")
@@ -78,8 +82,13 @@ def show_help():
 - [cyan]Öffne YouTube mit Lo-Fi Beats[/cyan]
 
 [bold yellow]Befehle:[/bold yellow]
-- [cyan]v[/cyan] / [cyan]voice[/cyan]   Spracheingabe über das Mikrofon
+- [cyan]wake[/cyan]         Sprachmodus: dauerhaft lauschen, "Hey Jarvis" sagen, fragen (Strg+C beendet)
+- [cyan]v[/cyan] / [cyan]voice[/cyan]   einmalige Spracheingabe über das Mikrofon
 - [cyan]reset[/cyan]        Gesprächsverlauf löschen
+- [cyan]spotify login[/cyan]  Spotify einmalig mit deinem Konto verknüpfen
+- [cyan]kosten[/cyan]       Token-Verbrauch und geschätzte Kosten dieser Sitzung
+- [cyan]memory[/cyan]       gespeicherte Fakten anzeigen (Jarvis merkt sich Dinge selbst, du kannst
+                 ihm aber auch sagen: "Merk dir, dass ..." oder "Vergiss, dass ...")
 - [cyan]hilfe[/cyan]        diese Hilfe
 - [cyan]exit[/cyan]         beenden
 """
@@ -106,7 +115,30 @@ def on_tool_result(call: ToolCall, result: ToolResult):
     console.print(f"  [dim]{icon} {first_line}[/dim]")
 
 
+def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
+    """Startet den Wake-Word-Sprachmodus. Gibt False zurück, wenn er nicht verfügbar ist."""
+    try:
+        from core.voice_loop import VoiceLoop
+
+        with console.status("[dim]Lade Wake-Word-Modell ...[/dim]"):
+            loop = VoiceLoop(
+                agent,
+                voice,
+                console=console,
+                follow_up_seconds=config.FOLLOW_UP_SECONDS,
+                barge_in_threshold=config.BARGE_IN_THRESHOLD,
+            )
+    except Exception as e:
+        console.print(f"[bold red]Sprachmodus nicht verfügbar:[/bold red] {e}")
+        console.print("[dim]Mikrofon angeschlossen? Pakete installiert (uv sync)?[/dim]")
+        return False
+    loop.run()
+    console.print("[dim]Sprachmodus beendet. Du bist wieder in der Texteingabe ('wake' startet ihn erneut).[/dim]")
+    return True
+
+
 def main():
+    voice_mode = config.VOICE_MODE_ON_START or "--voice" in sys.argv[1:]
     agent = JarvisAgent(
         confirm=confirm_action,
         on_tool_call=on_tool_call,
@@ -117,12 +149,17 @@ def main():
     voice_listener = None  # wird bei Bedarf geladen (Mikrofon-Bibliotheken)
 
     print_status(agent, voice)
-    console.print("[dim]Befehl eingeben, 'v' für Spracheingabe, 'hilfe' für Beispiele, 'exit' zum Beenden.[/dim]\n")
+    if voice_mode:
+        run_voice_mode(agent, voice)
+    console.print("[dim]Befehl eingeben, 'wake' für den Sprachmodus, 'v' für eine Spracheingabe, 'hilfe', 'exit'.[/dim]\n")
 
     while True:
         try:
             user_input = Prompt.ask("[bold cyan]Jarvis[/bold cyan] [bold white]>[/bold white]").strip()
             if not user_input:
+                if voice.is_speaking():
+                    voice.stop()
+                    console.print("[dim]Sprachausgabe gestoppt.[/dim]")
                 continue
             cmd = user_input.lower()
 
@@ -137,12 +174,33 @@ def main():
                 agent.reset()
                 console.print("[dim]Gesprächsverlauf gelöscht.[/dim]")
                 continue
+            if cmd in ("spotify login", "spotify verknüpfen"):
+                voice.stop()
+                ok, message = agent.tools["spotify"].login()
+                console.print(f"[{'green' if ok else 'red'}]{message}[/]")
+                continue
+            if cmd in ("kosten", "usage", "verbrauch"):
+                console.print(f"[dim]Diese Sitzung: {agent.usage_summary(agent.session_usage)}[/dim]")
+                continue
+            if cmd in ("memory", "gedächtnis", "erinnerungen"):
+                facts = agent.memory.list_facts() if agent.memory else []
+                body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{f['category']}[/cyan]  {f['content']}" for f in facts) or "[dim]Noch leer.[/dim]"
+                console.print(Panel(body, title="[bold magenta]Gedächtnis[/bold magenta]", border_style="magenta"))
+                continue
+            if cmd in ("wake", "sprachmodus", "hey", "zuhören", "listen"):
+                voice.stop()
+                run_voice_mode(agent, voice)
+                continue
             if cmd in ("v", "voice", "sprechen", "sprache", "mic"):
                 voice.stop()
                 if voice_listener is None:
                     from core.voice_input import VoiceInputListener
 
-                    voice_listener = VoiceInputListener(language=config.LANGUAGE)
+                    voice_listener = VoiceInputListener(
+                        language=config.LANGUAGE,
+                        vad_threshold=config.VAD_THRESHOLD,
+                        silence_limit=config.SILENCE_LIMIT_SECONDS,
+                    )
                 user_input = voice_listener.record_and_recognize()
                 if not user_input:
                     continue
@@ -152,7 +210,11 @@ def main():
                 response = agent.process_query(user_input)
 
             console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
+            if agent.last_usage.calls:
+                console.print(f"  [dim]{agent.usage_summary(agent.last_usage)}[/dim]")
             voice.speak(response)
+            if voice.enabled:
+                console.print("[dim]Enter stoppt die Sprachausgabe.[/dim]")
 
         except KeyboardInterrupt:
             voice.stop()

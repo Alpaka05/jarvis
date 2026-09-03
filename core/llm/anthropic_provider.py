@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
 
 MAX_TOKENS = 8192
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -80,6 +80,9 @@ class AnthropicProvider(LLMProvider):
             "system": system,
             "messages": self.convert_messages(messages),
             "output_config": {"effort": self.effort},
+            # Prompt-Caching: Tools + System-Prompt + bisheriger Verlauf werden serverseitig
+            # gecacht; Folgeaufrufe (Tool-Runden, nächste Fragen) zahlen dafür nur ~10 %.
+            "cache_control": {"type": "ephemeral"},
         }
         if tools:
             params["tools"] = self.convert_tools(tools)
@@ -112,9 +115,18 @@ class AnthropicProvider(LLMProvider):
             tool_calls = []
 
         raw_content = [b.model_dump(exclude_none=True) for b in response.content]
+        u = response.usage
+        usage = Usage(
+            input_tokens=u.input_tokens or 0,
+            output_tokens=u.output_tokens or 0,
+            cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+            cache_write_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            calls=1,
+        )
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
             raw={"provider": "anthropic", "content": raw_content},
             stop_reason=response.stop_reason or "",
+            usage=usage,
         )

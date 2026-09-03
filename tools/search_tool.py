@@ -1,66 +1,166 @@
-import urllib.parse
+"""Websuche.
+
+Backends in dieser Reihenfolge:
+  1. Tavily (LLM-optimiert, liefert Kurzantwort) – wenn TAVILY_API_KEY gesetzt ist
+  2. ddgs (DuckDuckGo/Bing/Brave-Metasuche ohne API-Key) – Standard
+Dazu: Nachrichtensuche und das Auslesen einer Webseite als Text.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List
 
 import requests
 
+from config import config
 from tools.base import BaseTool, ToolResult
+
+# Wikipedia & Co. verlangen einen identifizierbaren User-Agent; manche Seiten sperren dagegen alles,
+# was nicht wie ein Browser aussieht. Daher zuerst ehrlich, bei 403 als Browser erneut.
+USER_AGENTS = (
+    "Jarvis/0.2 (persoenlicher Assistent; +https://github.com/Alpaka05/jarvis) requests",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+)
+MAX_PAGE_CHARS = 6000
 
 
 class SearchTool(BaseTool):
     name = "web_search"
     description = (
-        "Websuche (DuckDuckGo) für aktuelle Informationen, Nachrichten, Wetter, Fakten. "
-        "Liefert Titel, Link und Kurzbeschreibung der Top-Treffer."
+        "Internet-Recherche. action=search für allgemeine Websuche (Fakten, Wetter, Produkte), "
+        "action=news für aktuelle Nachrichten der letzten Tage, action=read_url um den Textinhalt einer "
+        "bestimmten Webseite zu lesen (z.B. einen Treffer vertiefen). Liefert Titel, URL und Kurzbeschreibung."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Suchanfrage, möglichst präzise (z.B. 'Wetter Berlin morgen')."},
+            "action": {
+                "type": "string",
+                "enum": ["search", "news", "read_url"],
+                "description": "search = Websuche (Standard), news = Nachrichten, read_url = Seite auslesen",
+            },
+            "query": {"type": "string", "description": "Suchanfrage, möglichst präzise (search/news)."},
+            "url": {"type": "string", "description": "Vollständige URL der zu lesenden Seite (read_url)."},
             "max_results": {"type": "integer", "description": "Anzahl Treffer (Standard 5, max 10)."},
         },
-        "required": ["query"],
+        "required": ["action"],
     }
 
-    def search_web(self, query: str, max_results: int = 5) -> ToolResult:
-        try:
-            from bs4 import BeautifulSoup
+    # ── Backends ─────────────────────────────────────────────────────────────
 
-            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jarvis/0.2"}
-            resp = requests.get(url, headers=headers, timeout=8)
-            if resp.status_code != 200:
-                return ToolResult.fail(f"Suche fehlgeschlagen (HTTP {resp.status_code}).")
+    def _tavily(self, query: str, max_results: int, news: bool) -> List[Dict[str, Any]]:
+        payload: Dict[str, Any] = {
+            "api_key": config.TAVILY_API_KEY,
+            "query": query,
+            "max_results": max_results,
+            "include_answer": True,
+            "search_depth": "basic",
+        }
+        if news:
+            payload["topic"] = "news"
+            payload["days"] = 7
+        resp = requests.post("https://api.tavily.com/search", json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        results = [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": (r.get("content") or "")[:400]}
+            for r in data.get("results", [])
+        ]
+        if data.get("answer"):
+            results.insert(0, {"title": "Kurzantwort (Tavily)", "url": "", "snippet": data["answer"]})
+        return results
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            results = []
-            for res in soup.select("div.result")[:max_results]:
-                title_el = res.select_one("a.result__a")
-                snippet_el = res.select_one(".result__snippet")
-                if not title_el:
-                    continue
-                href = title_el.get("href", "")
-                # DuckDuckGo verpackt Links als Redirect (uddg=...)
-                if "uddg=" in href:
-                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
-                    href = qs.get("uddg", [href])[0]
-                results.append(
+    def _ddgs(self, query: str, max_results: int, news: bool) -> List[Dict[str, Any]]:
+        from ddgs import DDGS
+
+        region = "de-de" if config.LANGUAGE.lower().startswith("de") else "wt-wt"
+        with DDGS(timeout=15) as ddgs:
+            if news:
+                rows = ddgs.news(query, max_results=max_results, region=region, timelimit="w")
+                return [
                     {
-                        "title": title_el.get_text(" ", strip=True),
-                        "url": href,
-                        "snippet": snippet_el.get_text(" ", strip=True) if snippet_el else "",
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": f"{(r.get('date') or '')[:10]} {r.get('source', '')}: {r.get('body', '')}".strip(),
                     }
-                )
+                    for r in rows
+                ]
+            rows = ddgs.text(query, max_results=max_results, region=region)
+            return [{"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")} for r in rows]
 
+    def search(self, query: str, max_results: int = 5, news: bool = False) -> ToolResult:
+        errors = []
+        backends = []
+        if config.TAVILY_API_KEY:
+            backends.append(("tavily", self._tavily))
+        backends.append(("ddgs", self._ddgs))
+
+        for name, fn in backends:
+            try:
+                results = fn(query, max_results, news)
+            except Exception as e:
+                errors.append(f"{name}: {str(e)[:120]}")
+                continue
             if not results:
-                return ToolResult.ok(f"Keine Treffer für '{query}'.", data=[])
+                errors.append(f"{name}: keine Treffer")
+                continue
+            label = "Nachrichten" if news else "Suchergebnisse"
+            lines = [
+                f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}".rstrip() for i, r in enumerate(results, 1)
+            ]
+            return ToolResult.ok(f"{label} für '{query}' ({name}):\n" + "\n".join(lines), data=results)
 
-            lines = [f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}" for i, r in enumerate(results, 1)]
-            return ToolResult.ok(f"Suchergebnisse für '{query}':\n" + "\n".join(lines), data=results)
-        except Exception as e:
-            return ToolResult.fail(f"Websuche fehlgeschlagen: {e}")
+        return ToolResult.fail("Websuche fehlgeschlagen: " + "; ".join(errors))
 
-    def execute(self, query: str = "", **kwargs) -> ToolResult:
+    # ── Seite lesen ──────────────────────────────────────────────────────────
+
+    def read_url(self, url: str) -> ToolResult:
+        if not url.lower().startswith(("http://", "https://")):
+            url = "https://" + url
+        resp = None
+        last_error: Exception | None = None
+        for ua in USER_AGENTS:
+            try:
+                resp = requests.get(url, headers={"User-Agent": ua, "Accept-Language": config.LANGUAGE}, timeout=15)
+                if resp.status_code in (401, 403, 429):
+                    last_error = RuntimeError(f"HTTP {resp.status_code}")
+                    resp = None
+                    continue
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                last_error = e
+                resp = None
+        if resp is None:
+            return ToolResult.fail(f"Seite konnte nicht geladen werden: {last_error}")
+
+        ctype = resp.headers.get("content-type", "")
+        if "html" not in ctype and "text" not in ctype:
+            return ToolResult.fail(f"Kein lesbarer Textinhalt (Content-Type {ctype}).")
+
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
+            tag.decompose()
+        main = soup.find("main") or soup.find("article") or soup.body or soup
+        text = re.sub(r"\n\s*\n+", "\n\n", main.get_text("\n", strip=True))
+        title = soup.title.get_text(strip=True) if soup.title else url
+        if not text.strip():
+            return ToolResult.fail("Seite enthält keinen auslesbaren Text (vermutlich per JavaScript gerendert).")
+        truncated = " …[gekürzt]" if len(text) > MAX_PAGE_CHARS else ""
+        return ToolResult.ok(f"{title}\n{url}\n\n{text[:MAX_PAGE_CHARS]}{truncated}", data={"title": title, "url": url})
+
+    # ── Dispatch ─────────────────────────────────────────────────────────────
+
+    def execute(self, action: str = "search", query: str = "", **kwargs) -> ToolResult:
+        if action == "read_url":
+            url = (kwargs.get("url") or query or "").strip()
+            if not url:
+                return ToolResult.fail("Bitte eine URL angeben ('url').")
+            return self.read_url(url)
         q = (query or kwargs.get("q") or "").strip()
         if not q:
             return ToolResult.fail("Bitte eine Suchanfrage angeben ('query').")
         n = max(1, min(int(kwargs.get("max_results") or 5), 10))
-        return self.search_web(q, n)
+        return self.search(q, n, news=(action == "news"))

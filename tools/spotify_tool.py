@@ -57,22 +57,66 @@ class SpotifyTool(BaseTool):
             return "applescript"
         return "none"
 
-    def _client(self):
-        if self._sp is not None:
-            return self._sp
-        import spotipy
-        from spotipy.oauth2 import SpotifyOAuth
-        from spotipy.cache_handler import CacheFileHandler
+    @property
+    def cache_path(self) -> str:
+        return str(config.DATA_DIR / ".spotify_cache")
 
-        auth = SpotifyOAuth(
+    def _auth_manager(self, open_browser: bool):
+        from spotipy.cache_handler import CacheFileHandler
+        from spotipy.oauth2 import SpotifyOAuth
+
+        return SpotifyOAuth(
             client_id=config.SPOTIFY_CLIENT_ID,
             client_secret=config.SPOTIFY_CLIENT_SECRET,
             redirect_uri=config.SPOTIFY_REDIRECT_URI,
             scope=SCOPES,
-            cache_handler=CacheFileHandler(cache_path=str(config.DATA_DIR / ".spotify_cache")),
-            open_browser=True,
+            cache_handler=CacheFileHandler(cache_path=self.cache_path),
+            open_browser=open_browser,
         )
-        self._sp = spotipy.Spotify(auth_manager=auth, requests_timeout=10)
+
+    def is_linked(self) -> bool:
+        """True, wenn bereits ein Token gespeichert ist (Verknüpfung abgeschlossen)."""
+        if not self.web_api_configured:
+            return False
+        try:
+            from spotipy.cache_handler import CacheFileHandler
+
+            return CacheFileHandler(cache_path=self.cache_path).get_cached_token() is not None
+        except Exception:
+            return False
+
+    def login(self) -> tuple[bool, str]:
+        """Interaktive Erst-Verknüpfung: öffnet den Browser und wartet auf die Zustimmung."""
+        if not self.web_api_configured:
+            return False, "SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET fehlen in der .env."
+        print("Öffne den Browser zur Spotify-Anmeldung. Bitte dort mit deinem Spotify-Konto einloggen und zustimmen.")
+        print(f"Falls kein Fenster erscheint: Die URL wird unten angezeigt. Redirect-URI: {config.SPOTIFY_REDIRECT_URI}")
+        try:
+            import spotipy
+
+            sp = spotipy.Spotify(auth_manager=self._auth_manager(open_browser=True), requests_timeout=15)
+            me = sp.current_user()
+            self._sp = sp
+            product = me.get("product", "unbekannt")
+            hint = "" if product == "premium" else "\nHinweis: Die Wiedergabesteuerung über die Web API erfordert Spotify Premium."
+            return True, f"Spotify verknüpft als {me.get('display_name') or me.get('id')} (Konto: {product}).{hint}"
+        except Exception as e:
+            msg = str(e)
+            if "INVALID_CLIENT" in msg or "invalid_client" in msg:
+                return False, "Spotify lehnt die App ab (INVALID_CLIENT): Client-ID/Secret prüfen."
+            if "redirect" in msg.lower():
+                return False, (
+                    f"Redirect-URI stimmt nicht: In der Spotify-App muss exakt '{config.SPOTIFY_REDIRECT_URI}' eingetragen sein."
+                )
+            return False, f"Verknüpfung fehlgeschlagen: {msg}"
+
+    def _client(self):
+        if self._sp is not None:
+            return self._sp
+        import spotipy
+
+        # Kein Browser-Popup aus dem Tool heraus – die Verknüpfung passiert explizit über login()
+        self._sp = spotipy.Spotify(auth_manager=self._auth_manager(open_browser=False), requests_timeout=10)
         return self._sp
 
     # ── Web API ──────────────────────────────────────────────────────────────
@@ -103,9 +147,13 @@ class SpotifyTool(BaseTool):
         )
 
     def _web(self, action: str, kw: Dict[str, Any]) -> ToolResult:
+        if not self.is_linked():
+            return ToolResult.fail(
+                "Spotify ist konfiguriert, aber noch nicht mit deinem Konto verknüpft. "
+                "Bitte einmalig in der Jarvis-Konsole 'spotify login' eingeben "
+                "(oder `uv run python scripts/spotify_login.py` ausführen) und im Browser zustimmen."
+            )
         try:
-            import spotipy
-
             sp = self._client()
             dev = self._device_id(sp)
             if action == "status":

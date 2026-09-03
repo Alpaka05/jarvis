@@ -91,6 +91,50 @@ def tts_available() -> bool:
 
 # ── Audio-Wiedergabe & Edge-TTS ─────────────────────────────────────────────
 
+_output_device_cache: dict = {}
+
+
+def default_output_device() -> Optional[int]:
+    """Ausgabegerät für sounddevice, das dem Windows-Standardgerät folgt.
+
+    PortAudio wählt unter Windows gern ein beliebiges MME-Gerät; der
+    „Microsoft Soundmapper“ leitet dagegen immer auf das aktuelle Standardgerät.
+    """
+    if "device" in _output_device_cache:
+        return _output_device_cache["device"]
+    device: Optional[int] = None
+    if IS_WINDOWS:
+        try:
+            import sounddevice as sd
+
+            for idx, d in enumerate(sd.query_devices()):
+                name = d["name"].lower().replace(" ", "")
+                if d["max_output_channels"] > 0 and "soundmapper" in name and "output" in name:
+                    device = idx
+                    break
+        except Exception:
+            device = None
+    _output_device_cache["device"] = device
+    return device
+
+
+def synthesize_cached(text: str, cache_name: str) -> Optional[str]:
+    """Erzeugt eine Edge-TTS-Datei einmalig und legt sie unter data/ ab (z.B. Bestätigungsphrasen)."""
+    import hashlib
+
+    key = hashlib.sha1(f"{config.EDGE_VOICE}|{config.EDGE_RATE}|{config.EDGE_PITCH}|{text}".encode("utf-8")).hexdigest()[:10]
+    path = config.DATA_DIR / f"{cache_name}_{key}.mp3"
+    if path.exists() and path.stat().st_size > 0:
+        return str(path)
+    tmp = synthesize_edge(text)
+    if not tmp:
+        return None
+    try:
+        shutil.move(tmp, path)
+        return str(path)
+    except Exception:
+        return tmp
+
 def play_audio_process(path: str) -> Optional[subprocess.Popen]:
     """Spielt eine Audiodatei (mp3) als eigenen, abbrechbaren Prozess ab."""
     try:

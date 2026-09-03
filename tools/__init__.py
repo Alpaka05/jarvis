@@ -3,6 +3,7 @@ from tools.browser_tool import BrowserTool
 from tools.calendar_tool import CalendarTool
 from tools.homeassistant_tool import HomeAssistantTool
 from tools.mail_tool import MailTool
+from tools.memory_tool import MemoryTool
 from tools.search_tool import SearchTool
 from tools.spotify_tool import SpotifyTool
 from tools.system_tool import SystemTool
@@ -12,6 +13,7 @@ __all__ = [
     "ToolResult",
     "CalendarTool",
     "MailTool",
+    "MemoryTool",
     "HomeAssistantTool",
     "SearchTool",
     "SystemTool",
@@ -21,9 +23,13 @@ __all__ = [
 ]
 
 
-def default_tools() -> list:
-    """Alle Standard-Tools in der Reihenfolge, in der sie dem LLM angeboten werden."""
-    return [
+def default_tools(memory=None) -> list:
+    """Alle Standard-Tools in der Reihenfolge, in der sie dem LLM angeboten werden.
+
+    Args:
+        memory: MemoryStore für das Langzeitgedächtnis; ohne Store gibt es kein memory-Tool.
+    """
+    return ([MemoryTool(memory)] if memory is not None else []) + [
         SystemTool(),
         CalendarTool(),
         HomeAssistantTool(),

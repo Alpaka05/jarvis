@@ -33,11 +33,36 @@ class ToolCall:
 
 
 @dataclass
+class Usage:
+    """Token-Verbrauch eines Aufrufs (0, wenn der Provider nichts liefert)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    calls: int = 0
+
+    def add(self, other: "Usage") -> "Usage":
+        return Usage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.cache_read_tokens + other.cache_read_tokens,
+            self.cache_write_tokens + other.cache_write_tokens,
+            self.calls + other.calls,
+        )
+
+    @property
+    def total_input(self) -> int:
+        return self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+
+
+@dataclass
 class LLMResponse:
     text: str = ""
     tool_calls: List[ToolCall] = field(default_factory=list)
     raw: Optional[Dict[str, Any]] = None  # wird in history["_raw"] gespeichert
     stop_reason: str = ""
+    usage: Usage = field(default_factory=Usage)
 
     @property
     def has_tool_calls(self) -> bool:

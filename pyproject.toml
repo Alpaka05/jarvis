@@ -18,6 +18,9 @@ dependencies = [
     "SpeechRecognition>=3.10",
     "spotipy>=2.24",
     "edge-tts>=7.2.8",
+    "openwakeword>=0.6.0",
+    "miniaudio>=1.71",
+    "ddgs>=9.16.0",
 ]
 
 [project.optional-dependencies]

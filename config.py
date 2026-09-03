@@ -47,6 +47,7 @@ class Config:
 
     # ── Persönliches ─────────────────────────────────────────────────────────
     USER_NAME: str = _env("USER_NAME")
+    SALUTATION: str = _env("SALUTATION")  # z.B. "Sir" – jede Antwort beginnt damit
 
     # ── Home Assistant ───────────────────────────────────────────────────────
     HA_URL: str = _env("HA_URL", "http://homeassistant.local:8123").rstrip("/")
@@ -60,13 +61,18 @@ class Config:
     SMTP_SERVER: str = _env("SMTP_SERVER")
     SMTP_PORT: int = int(_env("SMTP_PORT", "587"))
 
+    # ── Websuche ─────────────────────────────────────────────────────────────
+    TAVILY_API_KEY: str = _env("TAVILY_API_KEY")  # optional; ohne Key wird ddgs genutzt
+
     # ── Spotify ──────────────────────────────────────────────────────────────
     SPOTIFY_CLIENT_ID: str = _env("SPOTIFY_CLIENT_ID")
     SPOTIFY_CLIENT_SECRET: str = _env("SPOTIFY_CLIENT_SECRET")
     SPOTIFY_REDIRECT_URI: str = _env("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
 
-    # ── Daten ────────────────────────────────────────────────────────────────
+    # ── Daten & Gedächtnis ───────────────────────────────────────────────────
     DATA_DIR: Path = Path(__file__).parent / "data"
+    MEMORY_DB: Path = Path(_env("MEMORY_DB") or (Path(__file__).parent / "data" / "jarvis.db"))
+    MEMORY_MAX_FACTS: int = int(_env("MEMORY_MAX_FACTS", "60"))  # Fakten, die in den System-Prompt wandern
 
     # ── Sprache ──────────────────────────────────────────────────────────────
     TTS_ENABLED: bool = _bool("TTS_ENABLED", True)
@@ -77,6 +83,17 @@ class Config:
     EDGE_PITCH: str = _env("EDGE_PITCH", "+0Hz")
     VOICE_NAME: str = _env("VOICE_NAME")  # Systemstimme (Fallback / TTS_ENGINE=system)
     LANGUAGE: str = _env("LANGUAGE", "de-DE")
+
+    # ── Sprachmodus (Wake-Word) ──────────────────────────────────────────────
+    VOICE_MODE_ON_START: bool = _bool("VOICE_MODE_ON_START", False)
+    WAKE_WORD_MODEL: str = _env("WAKE_WORD_MODEL", "hey_jarvis")
+    WAKE_WORD_THRESHOLD: float = float(_env("WAKE_WORD_THRESHOLD", "0.5"))
+    FOLLOW_UP_SECONDS: float = float(_env("FOLLOW_UP_SECONDS", "6"))
+    ACK_STYLE: str = _env("ACK_STYLE", "both").lower()  # chime | voice | both
+    ACK_PHRASE: str = _env("ACK_PHRASE", "Ja?")
+    BARGE_IN_THRESHOLD: float = float(_env("BARGE_IN_THRESHOLD", "0.06"))
+    SILENCE_LIMIT_SECONDS: float = float(_env("SILENCE_LIMIT_SECONDS", "1.4"))  # Pause, die den Satz beendet
+    VAD_THRESHOLD: float = float(_env("VAD_THRESHOLD", "0.5"))  # Silero-VAD: ab wann gilt ein Block als Sprache
 
     # ── Plattform ────────────────────────────────────────────────────────────
     IS_WINDOWS = IS_WINDOWS

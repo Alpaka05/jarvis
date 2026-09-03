@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from config import config
-from core.llm import LLMError, LLMProvider, LLMResponse, ToolCall, create_providers
+from core.llm import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, create_providers, estimate_cost_usd
+from core.memory import MemoryStore
 from tools import default_tools
 from tools.base import BaseTool, ToolResult
 
@@ -39,14 +40,25 @@ class JarvisAgent:
         on_tool_call: Optional[ToolCallHook] = None,
         on_tool_result: Optional[ToolResultHook] = None,
         on_notice: Optional[NoticeHook] = None,
+        memory: Optional[MemoryStore] = None,
     ):
         self.notes: List[str] = []
         if provider is None and fallback is None:
             provider, fallback, self.notes = create_providers()
         self.provider = provider
         self.fallback = fallback
-        self.tools: Dict[str, BaseTool] = {t.name: t for t in (tools if tools is not None else default_tools())}
+        # Ohne explizite Tool-Liste: Standard-Tools inkl. Langzeitgedächtnis
+        if memory is None and tools is None:
+            memory = MemoryStore(config.MEMORY_DB)
+        self.memory = memory
+        self.tools: Dict[str, BaseTool] = {
+            t.name: t for t in (tools if tools is not None else default_tools(memory=memory))
+        }
+        self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.history: List[Dict[str, Any]] = []
+        self.last_usage = Usage()
+        self.session_usage = Usage()
+        self.voice_mode = False  # wird vom Sprachmodus gesetzt: kürzere, vorlesbare Antworten
         self.confirm = confirm
         self.on_tool_call = on_tool_call
         self.on_tool_result = on_tool_result
@@ -57,7 +69,7 @@ class JarvisAgent:
     def system_prompt(self) -> str:
         now = datetime.now()
         owner = f" von {config.USER_NAME}" if config.USER_NAME else ""
-        return (
+        prompt = (
             f"Du bist Jarvis, der persönliche KI-Assistent{owner}. Du läufst lokal auf einem {config.platform_name}-Rechner.\n"
             f"Heute ist {WEEKDAYS[now.weekday()]}, der {now.strftime('%d.%m.%Y')}. Die genaue Uhrzeit liefert das system-Tool.\n\n"
             "Verhalten:\n"
@@ -71,6 +83,32 @@ class JarvisAgent:
             "- Relative Datumsangaben (morgen, nächsten Montag) rechnest du anhand des heutigen Datums in YYYY-MM-DD um.\n"
             "- Nach ausgeführten Aktionen bestätigst du in einem Satz, was passiert ist. Bei Fehlern erklärst du kurz die Ursache."
         )
+        if self.voice_mode:
+            prompt += (
+                "\n- Sprachmodus: Deine Antwort wird vorgelesen. Höchstens drei bis vier Sätze. Bei umfangreichen Themen "
+                "nennst du nur das Wichtigste und bietest an, bei Bedarf mehr zu erzählen. Keine Aufzählungen, keine Listen."
+            )
+        if config.SALUTATION:
+            s = config.SALUTATION.strip().rstrip(",")
+            prompt += (
+                f"\n- Anrede: Jede Antwort beginnt mit „{s},“ – ausnahmslos, auch bei Rückfragen und Fehlern. "
+                f"Beispiel: „{s}, das Licht im Bad ist aus.“"
+            )
+        if self.memory is not None:
+            facts = self.memory.facts_for_prompt(config.MEMORY_MAX_FACTS)
+            prompt += (
+                "\n\nLangzeitgedächtnis (memory-Tool):\n"
+                "- Speichere mit remember, was dauerhaft relevant ist: Name, Vorlieben, wichtige Personen, "
+                "Geräte- und Raumzuordnungen (z.B. entity_ids), Gewohnheiten, laufende Projekte. "
+                "Nichts Flüchtiges wie Uhrzeiten oder einmalige Aufgaben.\n"
+                "- Widerspricht der Nutzer einem gespeicherten Fakt, korrigiere ihn mit update oder lösche ihn mit forget.\n"
+                "- Fragen nach früheren Gesprächen beantwortest du mit recall_conversations.\n"
+            )
+            if facts:
+                prompt += f"\nDas weißt du bereits über den Nutzer und seine Umgebung:\n{facts}"
+            else:
+                prompt += "\nDas Gedächtnis ist noch leer."
+        return prompt
 
     # ── Öffentliche API ──────────────────────────────────────────────────────
 
@@ -80,6 +118,20 @@ class JarvisAgent:
     def tool_schemas(self) -> List[Dict[str, Any]]:
         return [t.to_schema() for t in self.tools.values()]
 
+    def cost_of(self, usage: Usage) -> Optional[float]:
+        return estimate_cost_usd(self.provider.model, usage) if self.provider else None
+
+    def usage_summary(self, usage: Usage) -> str:
+        """Kurze Zeile wie '2 Aufrufe · 6.1k Eingabe (5.2k aus Cache) · 210 Ausgabe · ≈ 0.012 $'."""
+        cost = self.cost_of(usage)
+
+        def k(n: int) -> str:
+            return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+        cached = f" ({k(usage.cache_read_tokens)} aus Cache)" if usage.cache_read_tokens else ""
+        cost_str = f" · ≈ {cost:.3f} $" if cost is not None else ""
+        return f"{usage.calls} Aufruf(e) · {k(usage.total_input)} Eingabe{cached} · {k(usage.output_tokens)} Ausgabe{cost_str}"
+
     def process_query(self, query: str) -> str:
         if self.provider is None:
             return (
@@ -88,16 +140,23 @@ class JarvisAgent:
             )
 
         self.history.append({"role": "user", "content": query})
+        self._log("user", query)
         schemas = self.tool_schemas()
+        # System-Prompt einmal pro Anfrage fixieren: stabil für Prompt-Caching und damit
+        # Fakten, die mitten im Tool-Loop gespeichert werden, nicht als "längst bekannt" erscheinen.
+        system = self.system_prompt()
+        self.last_usage = Usage()
 
         try:
             for _ in range(self.MAX_STEPS):
-                response = self._chat(schemas)
+                response = self._chat(system, schemas)
                 self._append_assistant(response)
 
                 if not response.tool_calls:
                     self._trim_history()
-                    return response.text or "(keine Antwort erhalten)"
+                    answer = response.text or "(keine Antwort erhalten)"
+                    self._log("assistant", answer)
+                    return answer
 
                 for call in response.tool_calls:
                     result = self._run_tool(call)
@@ -115,10 +174,12 @@ class JarvisAgent:
             self.history.append(
                 {"role": "user", "content": "Bitte fasse jetzt kurz zusammen, was du erledigt hast, ohne weitere Tools zu nutzen."}
             )
-            response = self._chat([])
+            response = self._chat(system, [])
             self._append_assistant(response)
             self._trim_history()
-            return response.text or "Ich habe die maximale Anzahl an Schritten erreicht."
+            answer = response.text or "Ich habe die maximale Anzahl an Schritten erreicht."
+            self._log("assistant", answer)
+            return answer
 
         except LLMError as e:
             self._rollback_turn()
@@ -126,18 +187,28 @@ class JarvisAgent:
 
     # ── Intern ───────────────────────────────────────────────────────────────
 
-    def _chat(self, schemas: List[Dict[str, Any]]) -> LLMResponse:
+    def _log(self, role: str, content: str):
+        if self.memory is None:
+            return
+        try:
+            self.memory.log_message(self.session_id, role, content)
+        except Exception:
+            pass
+
+    def _chat(self, system: str, schemas: List[Dict[str, Any]]) -> LLMResponse:
         assert self.provider is not None
         try:
-            return self.provider.chat(self.system_prompt(), self.history, schemas)
+            return self.provider.chat(system, self.history, schemas)
         except LLMError as e:
             if self.fallback is None:
                 raise
             if self.on_notice:
                 self.on_notice(f"{self.provider.describe()} nicht erreichbar ({e}). Wechsle zu {self.fallback.describe()}.")
-            return self.fallback.chat(self.system_prompt(), self.history, schemas)
+            return self.fallback.chat(system, self.history, schemas)
 
     def _append_assistant(self, response: LLMResponse):
+        self.last_usage = self.last_usage.add(response.usage)
+        self.session_usage = self.session_usage.add(response.usage)
         msg: Dict[str, Any] = {
             "role": "assistant",
             "content": response.text,

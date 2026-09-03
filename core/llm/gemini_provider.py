@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
 
 
 class GeminiProvider(LLMProvider):
@@ -104,9 +104,17 @@ class GeminiProvider(LLMProvider):
         except Exception:
             pass
 
+        usage = Usage(calls=1)
+        meta = getattr(response, "usage_metadata", None)
+        if meta is not None:
+            cached = getattr(meta, "cached_content_token_count", 0) or 0
+            usage.input_tokens = (getattr(meta, "prompt_token_count", 0) or 0) - cached
+            usage.cache_read_tokens = cached
+            usage.output_tokens = (getattr(meta, "candidates_token_count", 0) or 0) + (getattr(meta, "thoughts_token_count", 0) or 0)
         return LLMResponse(
             text="\n".join(text_parts).strip(),
             tool_calls=tool_calls,
             raw=raw,
             stop_reason=str(getattr(response.candidates[0], "finish_reason", "") or ""),
+            usage=usage,
         )
