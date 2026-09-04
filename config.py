@@ -34,7 +34,7 @@ class Config:
     LLM_EFFORT: str = _env("LLM_EFFORT", "medium").lower()
 
     ANTHROPIC_API_KEY: str = _env("ANTHROPIC_API_KEY")
-    ANTHROPIC_MODEL: str = _env("ANTHROPIC_MODEL", "claude-opus-5")
+    ANTHROPIC_MODEL: str = _env("ANTHROPIC_MODEL", "claude-sonnet-5")
 
     OPENAI_API_KEY: str = _env("OPENAI_API_KEY")
     OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-4o-mini")

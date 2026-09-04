@@ -75,10 +75,10 @@ uv run playwright install chromium
 
 | Variable | Bedeutung |
 |---|---|
-| `LLM_PROVIDER` | `anthropic` (Standard), `openai`, `gemini` oder `ollama` |
+| `LLM_PROVIDER` | `anthropic` (Standard), `gemini` (kostenloses Kontingent), `openai` oder `ollama` |
 | `LLM_FALLBACK_PROVIDER` | wird genutzt, wenn der Haupt-Provider fehlt oder ausfällt (Standard `ollama`) |
 | `LLM_EFFORT` | Denk-Aufwand für Claude: `low` … `max` (Standard `medium`) |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude, Standardmodell `claude-opus-5` |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude, Standardmodell `claude-sonnet-5` (Opus 5 ist ~2,5× teurer) |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini, Standard `gemini-3.6-flash` (kostenloses Kontingent über [AI Studio](https://aistudio.google.com)) |
 | `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
