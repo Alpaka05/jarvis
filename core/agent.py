@@ -30,6 +30,7 @@ class JarvisAgent:
     MAX_STEPS = 8          # max. Tool-Runden pro Anfrage
     MAX_HISTORY = 60       # Nachrichten im Verlauf, bevor alte Runden verworfen werden
     MAX_TOOL_OUTPUT = 6000 # Zeichen pro Tool-Ergebnis, die ans LLM gehen
+    TOOL_TIMEOUT = 45.0    # Sekunden, die ein einzelner Tool-Aufruf höchstens dauern darf
 
     def __init__(
         self,
@@ -154,7 +155,7 @@ class JarvisAgent:
 
                 if not response.tool_calls:
                     self._trim_history()
-                    answer = response.text or "(keine Antwort erhalten)"
+                    answer = self._apply_salutation(response.text or "(keine Antwort erhalten)")
                     self._log("assistant", answer)
                     return answer
 
@@ -177,15 +178,40 @@ class JarvisAgent:
             response = self._chat(system, [])
             self._append_assistant(response)
             self._trim_history()
-            answer = response.text or "Ich habe die maximale Anzahl an Schritten erreicht."
+            answer = self._apply_salutation(response.text or "Ich habe die maximale Anzahl an Schritten erreicht.")
             self._log("assistant", answer)
             return answer
 
         except LLMError as e:
             self._rollback_turn()
             return f"Der KI-Dienst ist gerade nicht erreichbar: {e}"
+        except KeyboardInterrupt:
+            self._rollback_turn()
+            raise
 
     # ── Intern ───────────────────────────────────────────────────────────────
+
+    _LOWERCASE_STARTERS = {
+        "es", "der", "die", "das", "ich", "du", "sie", "wir", "ihr", "dein", "deine", "deinen", "in", "im", "am",
+        "auf", "für", "heute", "morgen", "gestern", "aktuell", "leider", "gerne", "gern", "natürlich", "alles",
+        "kein", "keine", "nichts", "laut", "ja", "nein", "okay", "ok", "hier", "dort", "zurzeit", "derzeit",
+        "momentan", "bei", "mit", "nach", "um", "an", "zu", "seit", "wie", "was", "wenn", "soll", "möchtest",
+        "willst", "kann", "könnte", "habe", "hast", "haben", "gibt", "erledigt", "verstanden", "gemerkt",
+    }
+
+    @classmethod
+    def _apply_salutation(cls, answer: str) -> str:
+        """Stellt sicher, dass die Antwort mit der konfigurierten Anrede beginnt (falls das Modell sie vergisst)."""
+        s = config.SALUTATION.strip().rstrip(",") if config.SALUTATION else ""
+        if not s or not answer.strip():
+            return answer
+        stripped = answer.lstrip()
+        if stripped.lower().startswith(s.lower()):
+            return answer
+        first_word = stripped.split(" ", 1)[0].strip(",.!?:;")
+        if first_word.lower() in cls._LOWERCASE_STARTERS:
+            stripped = stripped[0].lower() + stripped[1:]
+        return f"{s}, {stripped}"
 
     def _log(self, role: str, content: str):
         if self.memory is None:
@@ -235,16 +261,37 @@ class JarvisAgent:
             if prompt and self.confirm is not None and not self.confirm(prompt):
                 result = ToolResult.ok("Der Nutzer hat diese Aktion abgelehnt. Nicht ausgeführt.")
             else:
-                try:
-                    result = tool.execute(**args)
-                except TypeError as e:
-                    result = ToolResult.fail(f"Ungültige Argumente für '{call.name}': {e}. Erhalten: {json.dumps(args, ensure_ascii=False)}")
-                except Exception as e:
-                    result = ToolResult.fail(f"Fehler in Tool '{call.name}': {e}")
+                result = self._execute_with_timeout(tool, call, args)
 
         if self.on_tool_result:
             self.on_tool_result(call, result)
         return result
+
+    def _execute_with_timeout(self, tool: BaseTool, call: ToolCall, args: Dict[str, Any]) -> ToolResult:
+        """Führt ein Tool in einem Hilfs-Thread aus, damit ein hängendes Tool Jarvis nicht blockiert."""
+        import threading
+
+        box: Dict[str, Any] = {}
+
+        def run():
+            try:
+                box["result"] = tool.execute(**args)
+            except TypeError as e:
+                box["result"] = ToolResult.fail(
+                    f"Ungültige Argumente für '{call.name}': {e}. Erhalten: {json.dumps(args, ensure_ascii=False)}"
+                )
+            except Exception as e:
+                box["result"] = ToolResult.fail(f"Fehler in Tool '{call.name}': {e}")
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(self.TOOL_TIMEOUT)
+        if worker.is_alive():
+            return ToolResult.fail(
+                f"Tool '{call.name}' hat nach {int(self.TOOL_TIMEOUT)} Sekunden nicht geantwortet und wurde abgebrochen. "
+                "Bitte dem Nutzer kurz sagen, dass die Quelle nicht erreichbar war, oder eine andere Quelle versuchen."
+            )
+        return box.get("result") or ToolResult.fail(f"Tool '{call.name}' lieferte kein Ergebnis.")
 
     def _rollback_turn(self):
         """Entfernt die unvollständige letzte Runde (bis inkl. der letzten Nutzernachricht)."""

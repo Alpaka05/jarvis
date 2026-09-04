@@ -20,7 +20,7 @@ class AnthropicProvider(LLMProvider):
         except ImportError as e:  # pragma: no cover
             raise LLMError("Paket 'anthropic' nicht installiert (uv sync / pip install anthropic).") from e
         self._anthropic = anthropic
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = anthropic.Anthropic(api_key=api_key, timeout=60.0, max_retries=1)
         self.model = model
         self.effort = effort if effort in VALID_EFFORTS else "medium"
 

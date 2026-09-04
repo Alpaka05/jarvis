@@ -1,15 +1,29 @@
 """Google Gemini Provider – nutzt das `google-genai` SDK mit Function Calling."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+import time
+from typing import Any, Dict, List, Optional
 
 from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
 
 
 class GeminiProvider(LLMProvider):
+    """Gemini mit Modell-Rotation.
+
+    Das kostenlose Kontingent gilt pro Modell (z.B. 5 Anfragen/Minute). Bei 429/503 wird
+    deshalb automatisch auf das nächste Modell der Liste gewechselt, statt zu warten.
+    """
+
     name = "gemini"
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-3.6-flash",
+        fallback_models: Optional[List[str]] = None,
+        timeout_seconds: float = 45.0,
+    ):
         if not api_key:
             raise LLMError("GEMINI_API_KEY fehlt in der .env-Datei.")
         try:
@@ -18,8 +32,28 @@ class GeminiProvider(LLMProvider):
         except ImportError as e:  # pragma: no cover
             raise LLMError("Paket 'google-genai' nicht installiert (uv sync / pip install google-genai).") from e
         self._types = types
-        self.client = genai.Client(api_key=api_key)
+        # Hartes Zeitlimit pro Aufruf (ms) – ohne das kann eine hängende Anfrage minutenlang blockieren
+        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)))
         self.model = model
+        self.models: List[str] = [model] + [m for m in (fallback_models or []) if m and m != model]
+        self._cooldown_until: Dict[str, float] = {}  # Modell → Zeitpunkt, ab dem es wieder nutzbar ist
+
+    # ── Rotation ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _retry_seconds(error_text: str, default: float = 60.0) -> float:
+        m = re.search(r"retry in ([\d.]+)s", error_text, re.IGNORECASE) or re.search(r"retryDelay['\"]?: ?['\"](\d+)s", error_text)
+        return float(m.group(1)) if m else default
+
+    @staticmethod
+    def _is_rate_limited(error_text: str) -> bool:
+        markers = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED", "timed out", "Timeout")
+        return any(m in error_text for m in markers)
+
+    def _available_models(self) -> List[str]:
+        now = time.time()
+        ready = [m for m in self.models if self._cooldown_until.get(m, 0) <= now]
+        return ready or sorted(self.models, key=lambda m: self._cooldown_until.get(m, 0))[:1]
 
     # ── Konvertierung ────────────────────────────────────────────────────────
 
@@ -77,14 +111,24 @@ class GeminiProvider(LLMProvider):
             tools=self.convert_tools(tools),
             automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=self.convert_messages(messages),
-                config=cfg,
-            )
-        except Exception as e:
-            raise LLMError(f"Gemini: {e}") from e
+        contents = self.convert_messages(messages)
+        response = None
+        errors: List[str] = []
+        for model in self._available_models():
+            try:
+                response = self.client.models.generate_content(model=model, contents=contents, config=cfg)
+                self.model = model  # zuletzt erfolgreiches Modell merken (für Statusanzeige/Kosten)
+                break
+            except Exception as e:
+                text = str(e)
+                if self._is_rate_limited(text):
+                    wait = self._retry_seconds(text)
+                    self._cooldown_until[model] = time.time() + wait
+                    errors.append(f"{model}: Kontingent erschöpft, wieder in {int(wait)} s")
+                    continue
+                raise LLMError(f"Gemini ({model}): {text[:300]}") from e
+        if response is None:
+            raise LLMError("Gemini: alle Modelle ausgelastet – " + "; ".join(errors))
 
         if not response.candidates:
             raise LLMError("Gemini: Leere Antwort (möglicherweise blockiert).")

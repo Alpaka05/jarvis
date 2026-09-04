@@ -17,6 +17,7 @@ from tools.base import BaseTool, ToolResult
 
 # Wikipedia & Co. verlangen einen identifizierbaren User-Agent; manche Seiten sperren dagegen alles,
 # was nicht wie ein Browser aussieht. Daher zuerst ehrlich, bei 403 als Browser erneut.
+MAX_DOWNLOAD_BYTES = 2_000_000  # Seiten größer als 2 MB werden abgeschnitten
 USER_AGENTS = (
     "Jarvis/0.2 (persoenlicher Assistent; +https://github.com/Alpaka05/jarvis) requests",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
@@ -117,30 +118,38 @@ class SearchTool(BaseTool):
     def read_url(self, url: str) -> ToolResult:
         if not url.lower().startswith(("http://", "https://")):
             url = "https://" + url
-        resp = None
+        html = None
         last_error: Exception | None = None
         for ua in USER_AGENTS:
             try:
-                resp = requests.get(url, headers={"User-Agent": ua, "Accept-Language": config.LANGUAGE}, timeout=15)
-                if resp.status_code in (401, 403, 429):
-                    last_error = RuntimeError(f"HTTP {resp.status_code}")
-                    resp = None
-                    continue
-                resp.raise_for_status()
-                break
+                with requests.get(
+                    url, headers={"User-Agent": ua, "Accept-Language": config.LANGUAGE}, timeout=(8, 12), stream=True
+                ) as resp:
+                    if resp.status_code in (401, 403, 429):
+                        last_error = RuntimeError(f"HTTP {resp.status_code}")
+                        continue
+                    resp.raise_for_status()
+                    ctype = resp.headers.get("content-type", "")
+                    if "html" not in ctype and "text" not in ctype:
+                        return ToolResult.fail(f"Kein lesbarer Textinhalt (Content-Type {ctype}).")
+                    # Begrenzt lesen: schützt vor riesigen Seiten und tröpfelnden Servern
+                    chunks, size = [], 0
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        chunks.append(chunk)
+                        size += len(chunk)
+                        if size >= MAX_DOWNLOAD_BYTES:
+                            break
+                    resp.encoding = resp.encoding or "utf-8"
+                    html = b"".join(chunks).decode(resp.encoding, errors="ignore")
+                    break
             except Exception as e:
                 last_error = e
-                resp = None
-        if resp is None:
+        if html is None:
             return ToolResult.fail(f"Seite konnte nicht geladen werden: {last_error}")
-
-        ctype = resp.headers.get("content-type", "")
-        if "html" not in ctype and "text" not in ctype:
-            return ToolResult.fail(f"Kein lesbarer Textinhalt (Content-Type {ctype}).")
 
         from bs4 import BeautifulSoup
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
             tag.decompose()
         main = soup.find("main") or soup.find("article") or soup.body or soup

@@ -6,7 +6,10 @@ Ohne Web-API-Konfiguration wird auf dem Mac AppleScript als Fallback genutzt.
 """
 from __future__ import annotations
 
+import os
+import socket
 import subprocess
+import time
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -37,6 +40,10 @@ class SpotifyTool(BaseTool):
                 "description": "Art des Suchtreffers für play_search (Standard track).",
             },
             "volume": {"type": "integer", "description": "Lautstärke 0–100 für action=volume."},
+            "device": {
+                "type": "string",
+                "description": "Optional: Zielgerät per Namensteil, z.B. 'Echo', 'TV', 'MacBook'. Ohne Angabe: aktives Gerät, sonst dieser Rechner.",
+            },
         },
         "required": ["action"],
     }
@@ -121,16 +128,67 @@ class SpotifyTool(BaseTool):
 
     # ── Web API ──────────────────────────────────────────────────────────────
 
-    def _device_id(self, sp) -> Optional[str]:
-        """Aktives Gerät oder erstes verfügbares Gerät."""
+    @staticmethod
+    def _launch_app():
+        """Startet die Spotify-App, damit sie als Gerät erscheint."""
+        try:
+            if IS_MAC:
+                subprocess.Popen(["open", "-a", "Spotify"])
+            elif config.IS_WINDOWS:
+                os.startfile("spotify:")  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["spotify"])
+        except Exception:
+            pass
+
+    def _devices(self, sp, wait_for_app: bool = True) -> list:
         try:
             devices = sp.devices().get("devices", [])
         except Exception:
+            devices = []
+        if devices or not wait_for_app:
+            return devices
+        # Keine Geräte: Spotify-App starten und kurz warten, bis sie sich meldet
+        self._launch_app()
+        for _ in range(8):
+            time.sleep(1.0)
+            try:
+                devices = sp.devices().get("devices", [])
+            except Exception:
+                devices = []
+            if devices:
+                break
+        return devices
+
+    @staticmethod
+    def choose_device(devices: list, wanted: Optional[str] = None, preferred: str = "") -> Optional[dict]:
+        """Gerätewahl: Wunschname > aktives Gerät > bevorzugtes Gerät (Name/Hostname) > dieser Rechner (Computer) > erstes."""
+        if not devices:
             return None
+        if wanted:
+            w = wanted.lower()
+            for d in devices:
+                if w in d.get("name", "").lower() or w in d.get("type", "").lower():
+                    return d
         for d in devices:
             if d.get("is_active"):
-                return d.get("id")
-        return devices[0].get("id") if devices else None
+                return d
+        pref = (preferred or socket.gethostname()).lower()
+        for d in devices:
+            if pref and pref in d.get("name", "").lower():
+                return d
+        for d in devices:
+            if d.get("type", "").lower() == "computer":
+                return d
+        return devices[0]
+
+    def _pick_device(self, sp, wanted: Optional[str] = None) -> Optional[dict]:
+        devices = self._devices(sp)
+        return self.choose_device(devices, wanted, config.SPOTIFY_DEVICE_NAME)
+
+    @staticmethod
+    def _device_list_text(devices: list) -> str:
+        return ", ".join(f"{d['name']}{' (aktiv)' if d.get('is_active') else ''}" for d in devices) or "keine"
 
     def _web_status(self, sp) -> ToolResult:
         pb = sp.current_playback()
@@ -155,9 +213,24 @@ class SpotifyTool(BaseTool):
             )
         try:
             sp = self._client()
-            dev = self._device_id(sp)
             if action == "status":
                 return self._web_status(sp)
+
+            device = self._pick_device(sp, kw.get("device"))
+            if device is None:
+                return ToolResult.fail(
+                    "Kein Spotify-Gerät gefunden. Bitte die Spotify-App auf dem Rechner oder Handy öffnen; "
+                    "ich habe versucht, sie hier zu starten."
+                )
+            dev = device["id"]
+            # Inaktives Gerät zuerst übernehmen, sonst lehnt Spotify den Befehl ab
+            if not device.get("is_active") and action in ("play", "next", "previous", "play_search", "volume"):
+                try:
+                    sp.transfer_playback(dev, force_play=False)
+                    time.sleep(0.6)
+                except Exception:
+                    pass
+
             if action == "play":
                 sp.start_playback(device_id=dev)
             elif action == "pause":
@@ -189,15 +262,25 @@ class SpotifyTool(BaseTool):
             else:
                 return ToolResult.fail(f"Unbekannte Spotify-Aktion: {action}")
 
+            time.sleep(0.4)
             status = self._web_status(sp)
-            return ToolResult.ok(f"Aktion '{action}' ausgeführt. {status.output}")
+            return ToolResult.ok(f"Aktion '{action}' auf '{device['name']}' ausgeführt. {status.output}")
         except Exception as e:  # spotipy.SpotifyException u.a.
             msg = str(e)
-            if "NO_ACTIVE_DEVICE" in msg or "No active device" in msg or "404" in msg:
-                return ToolResult.fail("Kein aktives Spotify-Gerät. Bitte Spotify auf einem Gerät öffnen und kurz abspielen.")
+            if "NO_ACTIVE_DEVICE" in msg or "No active device" in msg or "Device not found" in msg or "404" in msg:
+                try:
+                    devices = self._device_list_text(self._devices(sp, wait_for_app=False))
+                except Exception:
+                    devices = "unbekannt"
+                return ToolResult.fail(
+                    f"Spotify konnte das Gerät nicht ansteuern. Verfügbare Geräte: {devices}. "
+                    "Bitte in der Spotify-App kurz auf Play drücken oder ein anderes Gerät nennen."
+                )
+            if "VOLUME_CONTROL_DISALLOW" in msg:
+                return ToolResult.fail("Dieses Gerät erlaubt keine Lautstärkeregelung über Spotify (z.B. Echo/TV).")
             if "PREMIUM_REQUIRED" in msg or "Premium" in msg:
                 return ToolResult.fail("Wiedergabesteuerung über die Web API erfordert Spotify Premium.")
-            return ToolResult.fail(f"Spotify-Fehler: {msg}")
+            return ToolResult.fail(f"Spotify-Fehler: {msg[:300]}")
 
     # ── AppleScript (macOS-Fallback) ─────────────────────────────────────────
 

@@ -22,7 +22,8 @@ class OpenAICompatProvider(LLMProvider):
         self._openai = openai
         self.name = name
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # Ollama auf CPU braucht länger, sonst gilt ein knappes Limit
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=180.0 if base_url else 60.0, max_retries=1)
 
     # ── Konvertierung ────────────────────────────────────────────────────────
 

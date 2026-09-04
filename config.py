@@ -40,7 +40,9 @@ class Config:
     OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-4o-mini")
 
     GEMINI_API_KEY: str = _env("GEMINI_API_KEY")
-    GEMINI_MODEL: str = _env("GEMINI_MODEL", "gemini-2.5-flash")
+    GEMINI_MODEL: str = _env("GEMINI_MODEL", "gemini-3.6-flash")
+    # Weitere Modelle, auf die bei erschöpftem Minuten-Kontingent rotiert wird (jedes Modell hat ein eigenes)
+    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-flash-lite")
 
     OLLAMA_HOST: str = _env("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL: str = _env("OLLAMA_MODEL", "llama3.1:8b")
@@ -68,6 +70,7 @@ class Config:
     SPOTIFY_CLIENT_ID: str = _env("SPOTIFY_CLIENT_ID")
     SPOTIFY_CLIENT_SECRET: str = _env("SPOTIFY_CLIENT_SECRET")
     SPOTIFY_REDIRECT_URI: str = _env("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+    SPOTIFY_DEVICE_NAME: str = _env("SPOTIFY_DEVICE_NAME")  # bevorzugtes Gerät (Namensteil); leer = dieser Rechner
 
     # ── Daten & Gedächtnis ───────────────────────────────────────────────────
     DATA_DIR: Path = Path(__file__).parent / "data"

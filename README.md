@@ -80,7 +80,7 @@ uv run playwright install chromium
 | `LLM_EFFORT` | Denk-Aufwand für Claude: `low` … `max` (Standard `medium`) |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude, Standardmodell `claude-opus-5` |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini, Standard `gemini-3.6-flash` (kostenloses Kontingent über [AI Studio](https://aistudio.google.com)) |
 | `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
 | `USER_NAME`, `SALUTATION` | dein Name; Anrede am Anfang jeder Antwort (z.B. `Sir`) |
 | `TAVILY_API_KEY` | optional: bessere Websuche über Tavily, sonst kostenlose ddgs-Metasuche |

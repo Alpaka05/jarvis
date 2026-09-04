@@ -206,8 +206,12 @@ def main():
                     continue
 
             voice.stop()  # laufende Ausgabe abbrechen, wenn eine neue Anfrage kommt
-            with console.status("[bold green]Denke nach...[/bold green]", spinner="dots"):
-                response = agent.process_query(user_input)
+            try:
+                with console.status("[bold green]Denke nach... [dim](Strg+C bricht diese Frage ab)[/dim][/bold green]", spinner="dots"):
+                    response = agent.process_query(user_input)
+            except KeyboardInterrupt:
+                console.print("[yellow]Frage abgebrochen.[/yellow]")
+                continue
 
             console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
             if agent.last_usage.calls:

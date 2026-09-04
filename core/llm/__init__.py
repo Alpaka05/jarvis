@@ -23,6 +23,7 @@ PRICING = {
     "claude-haiku-4-5": (1.00, 5.00),
     "gpt-4o-mini": (0.15, 0.60),
     "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-3.6-flash": (0.0, 0.0),  # Free Tier (AI Studio); bei Bezahl-Tarif hier Preise eintragen
 }
 
 
@@ -91,7 +92,8 @@ def build_provider(name: str) -> LLMProvider:
     if name == "gemini":
         from core.llm.gemini_provider import GeminiProvider
 
-        return GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL)
+        fallbacks = [m.strip() for m in config.GEMINI_FALLBACK_MODELS.split(",") if m.strip()]
+        return GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL, fallbacks)
     if name == "ollama":
         from core.llm.openai_provider import make_ollama_provider
 
