@@ -72,6 +72,9 @@ class Config:
     SPOTIFY_REDIRECT_URI: str = _env("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
     SPOTIFY_DEVICE_NAME: str = _env("SPOTIFY_DEVICE_NAME")  # bevorzugtes Gerät (Namensteil); leer = dieser Rechner
 
+    # ── Obsidian ─────────────────────────────────────────────────────────────
+    OBSIDIAN_VAULT: str = _env("OBSIDIAN_VAULT")  # Pfad zum Vault-Ordner; leer = Tool nicht anbieten
+
     # ── Daten & Gedächtnis ───────────────────────────────────────────────────
     DATA_DIR: Path = Path(__file__).parent / "data"
     MEMORY_DB: Path = Path(_env("MEMORY_DB") or (Path(__file__).parent / "data" / "jarvis.db"))

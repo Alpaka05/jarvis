@@ -32,7 +32,7 @@ core/voice_input.py     Spracheingabe (Silero-VAD → Google Speech Recognition)
 core/wakeword.py        Wake-Word „Hey Jarvis“ (openWakeWord, lokal)
 core/voice_loop.py      Sprachmodus: lauschen, bestätigen, aufnehmen, antworten, Nachfrage-Fenster
 tools/                  Tools mit JSON-Schema – das LLM wählt Tool und Argumente selbst
-  memory, system, calendar, homeassistant, spotify, mail, web_search (search/news/read_url), browser
+  memory, system, calendar, homeassistant, spotify, mail, web_search (search/news/read_url), browser, obsidian
 tests/                  pytest (Agent-Loop, Provider-Konvertierung, Tools)
 ```
 
@@ -84,6 +84,7 @@ uv run playwright install chromium
 | `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
 | `USER_NAME`, `SALUTATION` | dein Name; Anrede am Anfang jeder Antwort (z.B. `Sir`) |
 | `TAVILY_API_KEY` | optional: bessere Websuche über Tavily, sonst kostenlose ddgs-Metasuche |
+| `OBSIDIAN_VAULT` | Pfad zum Obsidian-Vault; Jarvis durchsucht, liest, erstellt und ergänzt Notizen (siehe unten) |
 | `HA_URL`, `HA_TOKEN` | Home Assistant (Long-Lived Access Token) |
 | `EMAIL_*`, `IMAP_*`, `SMTP_*` | E-Mail-Konto |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | Spotify Web API (siehe unten) |
@@ -98,6 +99,15 @@ Die Spotify Web API läuft auf allen Plattformen, braucht aber eine eigene App u
 `http://127.0.0.1:8888/callback` eintragen) und Spotify Premium für die Wiedergabesteuerung.
 Beim ersten Aufruf öffnet sich der Browser zur Anmeldung, das Token wird in `data/.spotify_cache`
 gespeichert. Ohne Web-API-Konfiguration nutzt Jarvis auf dem Mac AppleScript.
+
+### Obsidian
+
+Mit `OBSIDIAN_VAULT=/Pfad/zum/Vault` bekommt Jarvis das Tool `obsidian`: Volltextsuche über alle
+Notizen („Was steht in meinen Notizen zu HomeLab?“), Notizen lesen, Ordner auflisten, neue Notizen
+anlegen (optional mit Tags und Unterordner), Text anhängen und die heutige Tagesnotiz
+(`YYYY-MM-DD.md`) pflegen. Obsidian muss dafür nicht laufen. Schreibende Aktionen fragen in der
+Konsole nach; bestehende Notizen werden nie überschrieben oder gelöscht. `.obsidian`, `.trash` und
+Anhänge werden übersprungen.
 
 ### Sprachausgabe
 
@@ -151,5 +161,6 @@ uv run pytest
 - [x] Langzeitgedächtnis (Fakten über den Nutzer + durchsuchbares Gesprächsprotokoll, SQLite)
 - [x] Wake-Word („Hey Jarvis“) mit openWakeWord, Sprachmodus mit Nachfrage-Fenster
 - [ ] Lokale Spracherkennung (faster-whisper) statt Google
+- [x] Obsidian-Vault: Notizen durchsuchen, lesen, anlegen, ergänzen
 - [ ] Weitere Tools: Dateisystem, Timer/Erinnerungen, Notion, Wetter-API
 - [ ] Kalender-Backends (CalDAV, Google Calendar)
