@@ -50,12 +50,10 @@ def play_chime(kind: str = "wake"):
 
 def play_samples(samples: np.ndarray, sample_rate: int = SAMPLE_RATE):
     try:
-        sd.play(samples, sample_rate, device=platform_utils.default_output_device())
-        sd.wait()
+        platform_utils.play_audio(samples, sample_rate, device=platform_utils.default_output_device())
     except Exception:
         try:
-            sd.play(samples, sample_rate)
-            sd.wait()
+            platform_utils.play_audio(samples, sample_rate)
         except Exception:
             pass
 
@@ -161,7 +159,9 @@ class VoiceLoop:
         )
         setattr(self.agent, "voice_mode", True)
         try:
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16") as stream:
+            with platform_utils.open_audio_stream(
+                lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+            ) as stream:
                 self.detector.reset()
                 while self.running:
                     frame, _ = stream.read(FRAME_SAMPLES)

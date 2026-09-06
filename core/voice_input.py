@@ -19,6 +19,8 @@ import sounddevice as sd
 import speech_recognition as sr
 from rich.console import Console
 
+from core import platform_utils
+
 console = Console()
 
 VAD_FRAME = 480  # 30 ms @ 16 kHz, vom Silero-VAD erwartet
@@ -183,7 +185,9 @@ class VoiceInputListener:
     def record_and_recognize(self, max_duration: float = 30.0, silence_limit: Optional[float] = None) -> str:
         console.print("[bold yellow]🎤 Sprich jetzt ...[/bold yellow]")
         try:
-            with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype="int16") as stream:
+            with platform_utils.open_audio_stream(
+                lambda: sd.InputStream(samplerate=self.sample_rate, channels=1, dtype="int16")
+            ) as stream:
                 recording = self.record_from_stream(stream, max_duration, silence_limit, start_timeout=8.0)
         except Exception as e:
             console.print(f"[bold red]Fehler bei Sprachaufnahme:[/bold red] {e}")

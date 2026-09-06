@@ -163,8 +163,10 @@ class VoiceEngine:
             return False  # Edge nicht erreichbar → Systemstimme
 
         try:
-            with sd.OutputStream(
-                samplerate=EDGE_SAMPLE_RATE, channels=1, dtype="int16", device=platform_utils.default_output_device()
+            with platform_utils.open_audio_stream(
+                lambda: sd.OutputStream(
+                    samplerate=EDGE_SAMPLE_RATE, channels=1, dtype="int16", device=platform_utils.default_output_device()
+                )
             ) as out:
                 if listen_for_interrupt:
                     threading.Thread(target=self._monitor_barge_in, args=(stop_event,), daemon=True).start()
@@ -214,7 +216,9 @@ class VoiceEngine:
         chunk = int(sample_rate * 0.1)
         loud_frames = 0
         try:
-            with sd.InputStream(samplerate=sample_rate, channels=1, dtype="int16") as stream:
+            with platform_utils.open_audio_stream(
+                lambda: sd.InputStream(samplerate=sample_rate, channels=1, dtype="int16")
+            ) as stream:
                 stream.read(int(sample_rate * 0.4))  # Anlauf der eigenen Ausgabe ignorieren
                 while not stop_event.is_set() and self.is_speaking():
                     data, _ = stream.read(chunk)

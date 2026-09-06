@@ -5,10 +5,13 @@ wird hier für Windows, macOS und Linux bereitgestellt.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import webbrowser
 from typing import Optional
 
@@ -92,6 +95,100 @@ def tts_available() -> bool:
 # ── Audio-Wiedergabe & Edge-TTS ─────────────────────────────────────────────
 
 _output_device_cache: dict = {}
+
+# PortAudio (PaMacCore) schreibt Warnungen wie „||PaMacCore (AUHAL)|| … '!obj'“ direkt auf
+# Dateideskriptor 2, vorbei an Python. Ursache ist meist eine veraltete Geräteliste, z.B. nach
+# einem Bluetooth-Wechsel: PortAudio liest die Geräte nur bei der Initialisierung ein.
+_audio_lock = threading.RLock()
+_open_streams = 0
+
+
+@contextlib.contextmanager
+def quiet_stderr():
+    """Schaltet stderr auf Dateideskriptor-Ebene stumm (für C-Bibliotheken wie PortAudio)."""
+    try:
+        sys.stderr.flush()
+        fd = sys.stderr.fileno()
+    except Exception:
+        yield
+        return
+    saved = os.dup(fd)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, fd)
+        yield
+    finally:
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os.dup2(saved, fd)
+        os.close(saved)
+        os.close(devnull)
+
+
+def refresh_audio_devices() -> None:
+    """Initialisiert PortAudio neu, damit die Geräteliste aktuell ist.
+
+    Nur sicher, wenn gerade kein Stream offen ist; open_audio_stream() kümmert sich darum.
+    """
+    try:
+        import sounddevice as sd
+
+        with quiet_stderr():
+            sd._terminate()
+            sd._initialize()
+    except Exception:
+        pass
+    _output_device_cache.clear()
+
+
+@contextlib.contextmanager
+def open_audio_stream(factory):
+    """Öffnet einen sounddevice-Stream ohne PortAudio-Geschwätz auf stderr.
+
+    `factory` erzeugt den Stream (z.B. `lambda: sd.InputStream(...)`). Ist kein anderer Stream
+    offen, wird die Geräteliste vorher aufgefrischt; scheitert das Öffnen, wird nach einem
+    Auffrischen ein zweites Mal versucht.
+    """
+    global _open_streams
+    with _audio_lock:
+        if _open_streams == 0:
+            refresh_audio_devices()
+        try:
+            with quiet_stderr():
+                stream = factory().__enter__()  # startet den Stream (wie `with sd.InputStream(...)`)
+        except Exception:
+            if _open_streams != 0:
+                raise
+            refresh_audio_devices()
+            with quiet_stderr():
+                stream = factory().__enter__()
+        _open_streams += 1
+    try:
+        yield stream
+    finally:
+        with _audio_lock:
+            _open_streams -= 1
+        with quiet_stderr():
+            stream.__exit__(None, None, None)  # stop + close
+
+
+def play_audio(samples, sample_rate: int, device=None) -> None:
+    """Blockierende Wiedergabe eines Arrays über einen eigenen Stream (Ersatz für sd.play/sd.wait)."""
+    import numpy as np
+    import sounddevice as sd
+
+    data = np.asarray(samples)
+    if data.ndim == 1:
+        data = data.reshape(-1, 1)
+    if data.dtype.kind == "f":
+        data = data.astype(np.float32)
+    dtype = str(data.dtype)
+    with open_audio_stream(
+        lambda: sd.OutputStream(samplerate=sample_rate, channels=data.shape[1], dtype=dtype, device=device)
+    ) as out:
+        out.write(np.ascontiguousarray(data))
 
 
 def default_output_device() -> Optional[int]:
