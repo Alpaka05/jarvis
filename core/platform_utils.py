@@ -103,28 +103,65 @@ _audio_lock = threading.RLock()
 _open_streams = 0
 
 
-@contextlib.contextmanager
-def quiet_stderr():
-    """Schaltet stderr auf Dateideskriptor-Ebene stumm (für C-Bibliotheken wie PortAudio)."""
-    try:
-        sys.stderr.flush()
-        fd = sys.stderr.fileno()
-    except Exception:
-        yield
-        return
-    saved = os.dup(fd)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, fd)
-        yield
-    finally:
+_stderr_lock = threading.RLock()
+_native_stderr_silenced = False
+
+
+def silence_native_stderr() -> bool:
+    """Leitet Dateideskriptor 2 dauerhaft nach /dev/null, Pythons sys.stderr bleibt im Terminal.
+
+    C-Bibliotheken (PortAudio, onnxruntime …) schreiben über fd 2 und kommen so nicht mehr durch,
+    Python-Tracebacks und rich-Ausgaben landen weiter auf dem echten stderr. Kindprozesse erben
+    das stumme fd 2. Einmal pro Prozess, idempotent.
+    """
+    global _native_stderr_silenced
+    with _stderr_lock:
+        if _native_stderr_silenced:
+            return True
         try:
             sys.stderr.flush()
+            fd = sys.stderr.fileno()
+            real = os.dup(fd)
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, fd)
+            os.close(devnull)
+            sys.stderr = os.fdopen(real, "w", encoding="utf-8", errors="replace", buffering=1)
         except Exception:
-            pass
-        os.dup2(saved, fd)
-        os.close(saved)
-        os.close(devnull)
+            return False
+        _native_stderr_silenced = True
+        return True
+
+
+@contextlib.contextmanager
+def quiet_stderr():
+    """Schaltet stderr auf Dateideskriptor-Ebene stumm (für C-Bibliotheken wie PortAudio).
+
+    Serialisiert über ein Lock, damit sich Fenster aus verschiedenen Threads nicht überlappen
+    (sonst könnte ein Thread stderr wiederherstellen, während ein anderer noch drin ist).
+    """
+    with _stderr_lock:
+        if _native_stderr_silenced:
+            yield
+            return
+        try:
+            sys.stderr.flush()
+            fd = sys.stderr.fileno()
+        except Exception:
+            yield
+            return
+        saved = os.dup(fd)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, fd)
+            yield
+        finally:
+            try:
+                sys.stderr.flush()
+            except Exception:
+                pass
+            os.dup2(saved, fd)
+            os.close(saved)
+            os.close(devnull)
 
 
 def refresh_audio_devices() -> None:

@@ -20,6 +20,11 @@ if sys.platform.startswith("win"):
         except Exception:
             pass
 
+# PortAudio (PaMacCore) schreibt bei veralteter Geräteliste Warnungen direkt auf fd 2 –
+# dauerhaft stumm schalten, Pythons eigene Fehlerausgabe bleibt sichtbar.
+if sys.platform == "darwin":
+    platform_utils.silence_native_stderr()
+
 console = Console()
 
 BANNER = """
