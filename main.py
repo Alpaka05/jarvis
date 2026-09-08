@@ -3,7 +3,7 @@ import sys
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm, InvalidResponse, Prompt
 
 from config import config
 from core import platform_utils
@@ -100,9 +100,55 @@ def show_help():
     console.print(Panel(help_text, title="[bold blue]Hilfe[/bold blue]", border_style="blue"))
 
 
+class _JaNein(Confirm):
+    """Ja/Nein-Abfrage, die neben y/n auch j/ja/nein/yes/no versteht."""
+
+    validate_error_message = "[prompt.invalid]Bitte mit j (ja) oder n (nein) antworten"
+
+    def make_prompt(self, default):  # type: ignore[override]
+        prompt = self.prompt.copy()
+        prompt.end = ""
+        prompt.append(" ")
+        prompt.append("[j/n]", "prompt.choices")
+        prompt.append(" ")
+        prompt.append("(n)" if default is False else "(j)", "prompt.default")
+        prompt.append(self.prompt_suffix)
+        return prompt
+
+    def process_response(self, value: str) -> bool:
+        answer = value.strip().lower()
+        if answer in ("j", "ja", "y", "yes"):
+            return True
+        if answer in ("n", "nein", "no"):
+            return False
+        raise InvalidResponse(self.validate_error_message)
+
+
+def _active_lives() -> list:
+    """Laufende Rich-Live-Anzeigen (z.B. der 'Denke nach...'-Spinner) dieser Konsole."""
+    stack = getattr(console, "_live_stack", None)  # rich >= 14
+    if stack is not None:
+        return list(stack)
+    single = getattr(console, "_live", None)  # ältere rich-Versionen
+    return [single] if single is not None else []
+
+
 def confirm_action(prompt: str) -> bool:
-    console.print(Panel(prompt, title="[bold yellow]Bestätigung nötig[/bold yellow]", border_style="yellow"))
-    return Confirm.ask("Ausführen?", default=False)
+    # Während das LLM arbeitet, läuft ein Spinner (console.status). Der zeichnet die eigene Zeile
+    # ständig neu und überschreibt dabei die Eingabezeile der Nachfrage – sie ist dann unsichtbar.
+    # Deshalb alle Live-Anzeigen anhalten, fragen und danach wieder starten.
+    lives = _active_lives()
+    for live in reversed(lives):
+        live.stop()
+    try:
+        console.print(Panel(prompt, title="[bold yellow]Bestätigung nötig[/bold yellow]", border_style="yellow"))
+        return _JaNein.ask("Ausführen?", default=False, console=console)
+    except (EOFError, KeyboardInterrupt):
+        console.print("[dim]Keine Eingabe – Aktion nicht ausgeführt.[/dim]")
+        return False
+    finally:
+        for live in lives:
+            live.start()
 
 
 def on_tool_call(call: ToolCall):
