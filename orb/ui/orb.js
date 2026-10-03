@@ -4,7 +4,11 @@
  * leuchtende Kugel (Three.js) und darüber die HUD-Ringe (Canvas 2D). Ereignisformat siehe README,
  * Abschnitt „Orb-Overlay“. Ohne Verbindung bleibt das Fenster leer und versucht es alle 2 s erneut.
  *
- * Zum Ausprobieren im Browser: index.html?preview (dunkler Hintergrund) und optional &port=8765.
+ * Der Orb sitzt immer klein in einer Ecke und erscheint erst mit dem Wake-Word („wake“); kurz
+ * nachdem Jarvis wieder in den Ruhezustand geht, blendet er sich aus.
+ *
+ * Zum Ausprobieren im Browser: index.html?preview (dunkler Hintergrund, Orb immer sichtbar) und
+ * optional &port=8765.
  */
 (() => {
   "use strict";
@@ -20,22 +24,23 @@
   const PALETTE = { base: [0.31, 0.85, 1.0], listen: [0.30, 0.62, 1.0], think: [1.0, 0.71, 0.28] };
   const ERROR_COL = [1.0, 0.33, 0.40];
   const STATES = {
-    idle:      { label: "",           scale: .42, amp: .05, speed: .25, glow: .6,  bright: .7,  ring: .12, ringA: .4,  bars: 0, spin: 0, pSpeed: .15, pSpread: .6,  pAlpha: .35, levelAmp: 0,   col: "base" },
-    wake:      { label: "Aktiviert",  scale: 1.1, amp: .16, speed: .9,  glow: 1.4, bright: 1.1, ring: 1.4, ringA: 1,   bars: 0, spin: 0, pSpeed: 1.2, pSpread: 1.3, pAlpha: 1,   levelAmp: 0,   col: "base" },
-    listening: { label: "Höre zu",    scale: 1.0, amp: .07, speed: .6,  glow: 1.0, bright: .95, ring: .35, ringA: .85, bars: 1, spin: 0, pSpeed: .4,  pSpread: 1,   pAlpha: .7,  levelAmp: .24, col: "listen" },
-    thinking:  { label: "Denke nach", scale: .9,  amp: .13, speed: 1.3, glow: 1.1, bright: .9,  ring: 1.8, ringA: .9,  bars: 0, spin: 1, pSpeed: 1.6, pSpread: .8,  pAlpha: 1,   levelAmp: 0,   col: "think" },
-    speaking:  { label: "Spricht",    scale: 1.0, amp: .06, speed: .7,  glow: 1.15,bright: 1.0, ring: .5,  ringA: .9,  bars: 1, spin: 0, pSpeed: .6,  pSpread: 1.1, pAlpha: .8,  levelAmp: .28, col: "base" },
+    idle:      { label: "",           scale: .45, amp: .05, speed: .25, glow: .6,  bright: .7,  ring: .12, ringA: .4,  bars: 0, spin: 0, pSpeed: .15, pSpread: .6,  pAlpha: .35, levelAmp: 0,   col: "base" },
+    wake:      { label: "Aktiviert",  scale: .45, amp: .16, speed: .9,  glow: 1.4, bright: 1.1, ring: 1.4, ringA: 1,   bars: 0, spin: 0, pSpeed: 1.2, pSpread: 1.3, pAlpha: 1,   levelAmp: 0,   col: "base" },
+    listening: { label: "Höre zu",    scale: .45, amp: .07, speed: .6,  glow: 1.0, bright: .95, ring: .35, ringA: .85, bars: 1, spin: 0, pSpeed: .4,  pSpread: 1,   pAlpha: .7,  levelAmp: .24, col: "listen" },
+    thinking:  { label: "Denke nach", scale: .45, amp: .13, speed: 1.3, glow: 1.1, bright: .9,  ring: 1.8, ringA: .9,  bars: 0, spin: 1, pSpeed: 1.6, pSpread: .8,  pAlpha: 1,   levelAmp: 0,   col: "think" },
+    speaking:  { label: "Spricht",    scale: .45, amp: .06, speed: .7,  glow: 1.15,bright: 1.0, ring: .5,  ringA: .9,  bars: 1, spin: 0, pSpeed: .6,  pSpread: 1.1, pAlpha: .8,  levelAmp: .28, col: "base" },
   };
   const KEYS = ["scale", "amp", "speed", "glow", "bright", "ring", "ringA", "bars", "spin", "pSpeed", "pSpread", "pAlpha", "levelAmp"];
   const CORNERS = ["br", "bl", "tl", "tr"];
-  const TOOL_MS = 1800, ERROR_MS = 1500, LEVEL_STALE_MS = 250, SUBS_HIDE_MS = 3500, IDLE_FPS = 24, CHARS_PER_S = 15;
+  const TOOL_MS = 1800, ERROR_MS = 1500, LEVEL_STALE_MS = 250, HIDE_MS = 1500, IDLE_FPS = 24, CHARS_PER_S = 15;
+  const ALWAYS_SHOWN = params.has("preview");
 
   if (params.has("preview")) document.body.style.background = "radial-gradient(ellipse at 50% 45%, #0d1c27, #05090d 70%)";
 
   let corner = CORNERS.includes(params.get("corner")) ? params.get("corner") : "br";
   try { corner = localStorage.getItem("orb.corner") || corner; } catch (e) { /* ohne Speicher: Standardecke */ }
 
-  let state = "idle", connected = false, renderUntil = 0;
+  let state = "idle", connected = false, shown = ALWAYS_SHOWN, renderUntil = 0;
   let toolName = "", toolUntil = 0, errorUntil = 0;
   let levelTarget = 0, levelAt = 0, level = 0;
   let ring1 = 0, ring2 = 0, spinA = 0, flash = 0, shake = 0, t = 0, moving = true;
@@ -167,8 +172,17 @@
   resize();
 
   function restingPoint() {
-    const m = R * 1.25;
+    const m = R * STATES.idle.scale * 2.3 + 24; // äußerer Ring plus Rand
     return { x: corner[1] === "l" ? m : W - m, y: corner[0] === "t" ? m : H - m };
+  }
+
+  // ── Sichtbarkeit: erst mit dem Wake-Word ─────────────────────────────────
+  const visible = () => connected && shown;
+  function updateVisibility() {
+    const v = visible();
+    stageEl.style.opacity = v ? "1" : "0";
+    if (!v) { renderUntil = performance.now() + 800; clearSubs(); } // Ausblenden noch zu Ende zeichnen
+    else moving = true;
   }
 
   // ── HUD-Ebene ────────────────────────────────────────────────────────────
@@ -239,27 +253,28 @@
 
     // Tool-Beschriftung
     if (cur.toolA > .01 && toolName) {
-      const right = cx + rB + 170 < W, ang = right ? -Math.PI / 4 : -Math.PI * 3 / 4, dir = right ? 1 : -1;
+      const right = cx + rB + 170 < W, down = cy - rB - 80 < 0, dir = right ? 1 : -1;
+      const ang = (right ? 1 : 3) * Math.PI / 4 * (down ? 1 : -1);
       c.lineWidth = 5; c.strokeStyle = rgba(whiten(col, .2), cur.toolA);
       c.beginPath(); c.arc(cx, cy, rB, ang - .22, ang + .22); c.stroke();
       const x0 = cx + Math.cos(ang) * (rB + 6), y0 = cy + Math.sin(ang) * (rB + 6);
-      const x1 = x0 + dir * 26, y1 = y0 - 26, x2 = x1 + dir * 90;
+      const x1 = x0 + dir * 26, y1 = y0 + (down ? 26 : -26), x2 = x1 + dir * 90;
       c.lineWidth = 1; c.strokeStyle = rgba(col, .8 * cur.toolA);
       c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.lineTo(x2, y1); c.stroke();
       c.textAlign = right ? "left" : "right";
       c.fillStyle = rgba(col, .7 * cur.toolA); c.font = "500 10px ui-monospace, Menlo, Consolas, monospace";
-      c.fillText("TOOL-AUFRUF", x1, y1 - 22);
+      c.fillText("TOOL-AUFRUF", x1, down ? y1 + 14 : y1 - 22);
       c.fillStyle = rgba(whiten(col, .4), cur.toolA); c.font = "600 15px system-ui, -apple-system, 'Segoe UI', sans-serif";
-      c.fillText(toolName.toUpperCase(), x1, y1 - 6);
+      c.fillText(toolName.toUpperCase(), x1, down ? y1 + 30 : y1 - 6);
     }
 
-    // Zustandsname unter dem Orb
+    // Zustandsname zur Bildschirmmitte hin (unter dem Orb an oberen Ecken, sonst darüber)
     if (cur.labelA > .01 && STATES[state].label) {
       c.textAlign = "center";
       c.fillStyle = rgba(whiten(col, .3), .85 * cur.labelA);
       c.font = "600 12px system-ui, -apple-system, 'Segoe UI', sans-serif";
       if ("letterSpacing" in c) c.letterSpacing = "3px";
-      c.fillText(STATES[state].label.toUpperCase(), cx, cy + rD + 26);
+      c.fillText(STATES[state].label.toUpperCase(), cx, cy < H / 2 ? cy + rD + 26 : cy - rD - 16);
       if ("letterSpacing" in c) c.letterSpacing = "0px";
     }
 
@@ -275,7 +290,7 @@
   function frame(now) {
     requestAnimationFrame(frame);
     const realDt = Math.min(.1, (now - last) / 1000); last = now;
-    if (!connected && now > renderUntil) return; // ausgeblendet: nichts zeichnen
+    if (!visible() && now > renderUntil) return; // ausgeblendet: nichts zeichnen
     pending += realDt;
     const calm = state === "idle" && !moving && now > toolUntil + 500 && now > errorUntil && flash === 0 && shake === 0;
     if (calm && pending < 1 / IDLE_FPS) return; // Ruhezustand: weniger Bilder pro Sekunde
@@ -293,8 +308,7 @@
     cur.toolA += ((now < toolUntil ? 1 : 0) - cur.toolA) * k;
     cur.labelA += ((state === "idle" ? 0 : 1) - cur.labelA) * k;
 
-    const rest = restingPoint();
-    const gx = state === "idle" ? rest.x : W / 2, gy = state === "idle" ? rest.y : H / 2;
+    const rest = restingPoint(), gx = rest.x, gy = rest.y;
     if (cur.cx < 0) { cur.cx = gx; cur.cy = gy; }
     const kp = 1 - Math.exp(-dt * 4);
     cur.cx += (gx - cur.cx) * kp; cur.cy += (gy - cur.cy) * kp;
@@ -331,12 +345,26 @@
       gl.renderer.render(gl.scene, gl.camera);
     }
     drawHud(cx, cy, Rs);
+    placeSubs(cx, cy, Rs * 2.14);
     updateTyping(now);
   }
   requestAnimationFrame(frame);
 
-  // ── Untertitel ───────────────────────────────────────────────────────────
-  let typing = null, hideTimer = 0, shownChars = -1;
+  // ── Untertitel (neben dem Orb, zur Bildschirmmitte hin) ───────────────────
+  let typing = null, hideTimer = 0, shownChars = -1, subsPos = "";
+  function placeSubs(cx, cy, rD) {
+    const gap = 18, left = cx < W / 2, top = cy < H / 2;
+    const x = left ? cx + rD + gap : W - cx + rD + gap;
+    const y = top ? cy - rD * .6 : H - cy - rD * .6;
+    const pos = `${left}|${top}|${Math.round(x)}|${Math.round(y)}`;
+    if (pos === subsPos) return;
+    subsPos = pos;
+    Object.assign(subsEl.style, {
+      left: left ? `${x}px` : "auto", right: left ? "auto" : `${x}px`,
+      top: top ? `${y}px` : "auto", bottom: top ? "auto" : `${y}px`,
+      textAlign: left ? "left" : "right",
+    });
+  }
   function setLine(el, who, text, cls) {
     el.textContent = "";
     el.className = el === subUser ? "sub user" : "sub" + (cls ? " " + cls : "");
@@ -344,7 +372,7 @@
     const b = document.createElement("b");
     b.textContent = who;
     el.append(b, text);
-    subsEl.classList.remove("hidden");
+    if (visible()) subsEl.classList.remove("hidden"); // ohne Orb (z.B. Textmodus) keine Untertitel
   }
   function clearSubs() {
     typing = null;
@@ -377,11 +405,13 @@
     if (!STATES[name]) return;
     state = name;
     clearTimeout(hideTimer);
-    if (name === "wake") { flash = 1; clearSubs(); }
+    if (name === "wake") { flash = 1; clearSubs(); if (!shown) { shown = true; updateVisibility(); } }
     if (name === "speaking") startTyping();
     else if (typing && !typing.start) { setLine(subJarvis, "Jarvis", preview(typing.text)); typing = null; } // keine Sprachausgabe
     else typing = null;
-    if (name === "idle") hideTimer = setTimeout(clearSubs, SUBS_HIDE_MS);
+    if (name === "idle") hideTimer = setTimeout(() => {
+      if (ALWAYS_SHOWN) clearSubs(); else { shown = false; updateVisibility(); }
+    }, HIDE_MS);
   }
 
   function onMessage(msg) {
@@ -413,10 +443,10 @@
   function connect() {
     let ws;
     try { ws = new WebSocket(`ws://127.0.0.1:${PORT}`); } catch (e) { setTimeout(connect, 2000); return; }
-    ws.onopen = () => { connected = true; stageEl.style.opacity = "1"; moving = true; };
+    ws.onopen = () => { connected = true; updateVisibility(); };
     ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch (err) { /* kaputte Nachricht ignorieren */ } };
     ws.onclose = () => {
-      if (connected) { connected = false; renderUntil = performance.now() + 800; stageEl.style.opacity = "0"; clearSubs(); state = "idle"; }
+      if (connected) { connected = false; shown = ALWAYS_SHOWN; state = "idle"; updateVisibility(); }
       setTimeout(connect, 2000);
     };
   }

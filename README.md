@@ -157,8 +157,9 @@ Empfindlichkeit über `WAKE_WORD_THRESHOLD` (0.3 = empfindlicher, 0.7 = strenger
 
 Ein schwebender, animierter Orb als eigenes Fenster (Tauri + Three.js, in `orb/`) zeigt, ob
 Jarvis lauscht, nachdenkt oder spricht. Das Fenster liegt durchsichtig über dem Bildschirm,
-Klicks gehen hindurch; im Ruhezustand sitzt der Orb klein in einer Ecke. Bedient wird er über
-das Tray-Symbol (aus-/einblenden, Ecke wechseln, beenden).
+Klicks gehen hindurch. Der Orb erscheint erst mit dem Wake-Word, bleibt klein in einer Ecke
+(Untertitel daneben) und blendet sich nach dem Gespräch wieder aus. Bedient wird er über das
+Tray-Symbol (aus-/einblenden, Ecke wechseln, beenden).
 
 Bauen und starten (braucht [Rust](https://rustup.rs)):
 
