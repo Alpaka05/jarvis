@@ -221,11 +221,54 @@ def play_audio(samples, sample_rate: int, device=None) -> None:
         data = data.reshape(-1, 1)
     if data.dtype.kind == "f":
         data = data.astype(np.float32)
+    rate = output_sample_rate(device)
+    if rate and rate != sample_rate:
+        data, sample_rate = resample(data, sample_rate, rate), rate
     dtype = str(data.dtype)
     with open_audio_stream(
         lambda: sd.OutputStream(samplerate=sample_rate, channels=data.shape[1], dtype=dtype, device=device)
     ) as out:
         out.write(np.ascontiguousarray(data))
+
+
+def output_sample_rate(device=None) -> Optional[int]:
+    """Native Abtastrate des Ausgabegeräts unter macOS, sonst None (Rate egal).
+
+    Teilen sich Mikrofon und Ausgabe ein Gerät (z.B. USB-Mikrofon mit Kopfhörerausgang) und
+    wechseln aufeinanderfolgende Ausgabe-Streams die Rate, bricht CoreAudio den laufenden
+    Mikrofon-Stream ab („PaMacCore (AUHAL) … err='-50'“) – danach kommen keine Daten mehr.
+    Deshalb unter macOS immer in der nativen Rate des Geräts abspielen.
+    """
+    if not IS_MAC:
+        return None
+    key = f"rate:{device}"
+    if key not in _output_device_cache:
+        try:
+            import sounddevice as sd
+
+            rate = int(sd.query_devices(device, "output")["default_samplerate"])
+        except Exception:
+            rate = None
+        _output_device_cache[key] = rate or None
+    return _output_device_cache[key]
+
+
+def resample(samples, src_rate: int, dst_rate: int):
+    """Lineare Umrechnung der Abtastrate (für kurze Töne und Sprache ausreichend), Datentyp bleibt."""
+    import numpy as np
+
+    data = np.asarray(samples)
+    if src_rate == dst_rate or len(data) == 0:
+        return data
+    n = max(1, int(round(len(data) * dst_rate / src_rate)))
+    pos = np.linspace(0, len(data) - 1, n)
+    idx = np.arange(len(data))
+    flat = data.reshape(len(data), -1).astype(np.float32)
+    out = np.stack([np.interp(pos, idx, flat[:, c]) for c in range(flat.shape[1])], axis=1)
+    if data.dtype.kind == "i":
+        info = np.iinfo(data.dtype)
+        out = np.clip(np.round(out), info.min, info.max)
+    return out.astype(data.dtype).reshape((n,) + data.shape[1:])
 
 
 def default_output_device() -> Optional[int]:

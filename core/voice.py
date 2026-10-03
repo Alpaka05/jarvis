@@ -155,12 +155,14 @@ class VoiceEngine:
         """Satzweise Pipeline: synthetisieren im Hintergrund, abspielen sobald der erste Satz da ist."""
         sentences = split_sentences(text)
         q: "queue.Queue" = queue.Queue(maxsize=3)
+        device = platform_utils.default_output_device()
+        rate = platform_utils.output_sample_rate(device) or EDGE_SAMPLE_RATE
 
         def producer():
             for sentence in sentences:
                 if stop_event.is_set():
                     break
-                pcm = synthesize_pcm(sentence)
+                pcm = synthesize_pcm(sentence, rate)
                 q.put(pcm if pcm is not None else _FAIL)
             q.put(None)
 
@@ -172,16 +174,14 @@ class VoiceEngine:
 
         try:
             with platform_utils.open_audio_stream(
-                lambda: sd.OutputStream(
-                    samplerate=EDGE_SAMPLE_RATE, channels=1, dtype="int16", device=platform_utils.default_output_device()
-                )
+                lambda: sd.OutputStream(samplerate=rate, channels=1, dtype="int16", device=device)
             ) as out:
                 if listen_for_interrupt:
                     threading.Thread(target=self._monitor_barge_in, args=(stop_event,), daemon=True).start()
                 item = first
                 while item is not None and not stop_event.is_set():
                     if item is not _FAIL:
-                        self._write_pcm(out, item, stop_event)
+                        self._write_pcm(out, item, stop_event, chunk=rate // 30)
                     item = q.get()
         except Exception:
             return stop_event.is_set()  # Ausgabegerät-Problem → Fallback nur, wenn nicht gestoppt
@@ -189,7 +189,7 @@ class VoiceEngine:
 
     @staticmethod
     def _write_pcm(out, pcm: np.ndarray, stop_event: threading.Event, chunk: int = 800):
-        # 800 Samples = 33 ms: kurze Stop-Latenz und ~30 Pegelwerte pro Sekunde für den Orb
+        # 33 ms pro Block (800 Samples bei 24 kHz): kurze Stop-Latenz und ~30 Pegelwerte pro Sekunde für den Orb
         data = pcm.reshape(-1, 1)
         for i in range(0, len(data), chunk):
             if stop_event.is_set():
