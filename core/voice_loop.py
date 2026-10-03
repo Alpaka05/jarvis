@@ -7,6 +7,7 @@ Ablauf:
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable, Optional
 
@@ -209,6 +210,10 @@ class VoiceLoop:
                 return
             self.console.print(f"[bold cyan]Du:[/bold cyan] {text}")
             orb.transcript("user", text)
+            if self._is_text_mode_request(text):  # „Wechsel in den Chatmodus“ → Sprachmodus verlassen
+                self.console.print("[dim]Okay, zurück in den Chatmodus.[/dim]")
+                self.running = False
+                return
             if self._is_stop_phrase(text):  # „Danke“, „Das war's“ … → Gespräch sofort beenden
                 self.console.print("[dim]Okay, bis später. Lausche wieder auf „Hey Jarvis“.[/dim]")
                 return
@@ -271,6 +276,26 @@ class VoiceLoop:
             and any(w in cls.CLOSING_SIGNALS for w in words)
             and all(w in cls.CLOSING_SIGNALS or w in cls.CLOSING_FILLER for w in words)
         )
+
+    # Zurück in die Texteingabe: Modus-Wörter (auch „Chat Modus“/„Chat-Modus“) oder klare Wendungen.
+    # Bewusst eng gefasst, damit z.B. „Schreib eine Mail an Max“ eine normale Anfrage bleibt.
+    TEXT_MODE_WORDS = ("chatmodus", "textmodus", "tippmodus", "schreibmodus", "texteingabe", "chateingabe")
+    TEXT_MODE_PATTERN = re.compile(
+        r"\b(?:"
+        r"(?:zurück|wechsel\w*|geh\w*|schalt\w*) (?:zum|in den|zu dem|auf den) chat"
+        r"|ich (?:will|möchte|würde|mag) (?:(?:lieber|jetzt|wieder|gerne?|selbst|selber) )*(?:tippen|schreiben)"
+        r"|lass mich (?:(?:lieber|jetzt|wieder|selbst|selber) )*(?:tippen|schreiben)"
+        r"|sprachmodus (?:beenden|verlassen|stoppen|aus|ausschalten)"
+        r"|(?:beende|verlass|stopp|stoppe) (?:den )?sprachmodus"
+        r")\b"
+    )
+
+    @classmethod
+    def _is_text_mode_request(cls, text: str) -> bool:
+        norm = " ".join("".join(ch for ch in text.lower() if ch.isalpha() or ch == " ").split())
+        if any(w in norm.replace(" ", "") for w in cls.TEXT_MODE_WORDS):
+            return True
+        return bool(cls.TEXT_MODE_PATTERN.search(norm))
 
     def _speak_with_barge_in(self, stream, text: str) -> Optional[str]:
         """Spricht die Antwort. Abbruch durch „Hey Jarvis“ (Rückgabe 'wake') oder durch

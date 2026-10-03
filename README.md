@@ -153,6 +153,10 @@ Ablauf: „Hey Jarvis“ → Bestätigungston → Frage stellen → Antwort wird
 Sekunden Nachfrage-Fenster ohne Wake-Word → zurück zum Lauschen. Reinreden unterbricht die Ausgabe.
 Empfindlichkeit über `WAKE_WORD_THRESHOLD` (0.3 = empfindlicher, 0.7 = strenger).
 
+„Danke“, „Das war's“ o.Ä. beendet das Nachfrage-Fenster sofort. „Wechsel in den Chatmodus“
+(oder „Sprachmodus beenden“, „Ich will lieber tippen“) verlässt den Sprachmodus, danach kann
+man direkt tippen; `wake` startet ihn wieder.
+
 ### Orb-Overlay
 
 Ein schwebender, animierter Orb als eigenes Fenster (Tauri + Three.js, in `orb/`) zeigt, ob

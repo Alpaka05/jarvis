@@ -166,3 +166,39 @@ def test_follow_up_questions_are_not_closing():
         "Stopp die Musik", "Was war das letzte Lied",
     ]:
         assert not VoiceLoop._is_stop_phrase(text), text
+
+
+def test_text_mode_requests():
+    for text in [
+        "Wechsel in den Chatmodus", "Wechsle bitte in den Chat-Modus", "Chat Modus", "Textmodus bitte",
+        "Zurück zum Chat", "Geh in den Chat", "Sprachmodus beenden", "Beende den Sprachmodus",
+        "Ich will lieber tippen", "Ich möchte jetzt schreiben", "Lass mich tippen", "Texteingabe",
+    ]:
+        assert VoiceLoop._is_text_mode_request(text), text
+    for text in [
+        "Schreib eine Mail an Max", "Ich möchte eine Notiz schreiben", "Was schreibt der Spiegel heute",
+        "Wie spät ist es", "Danke", "Mach das Licht im Chatraum an",
+    ]:
+        assert not VoiceLoop._is_text_mode_request(text), text
+
+
+def test_text_mode_request_leaves_voice_mode_without_agent(monkeypatch):
+    stream = FakeStream([np.zeros((FRAME_SAMPLES, 1), dtype=np.int16) for _ in range(5)])
+    monkeypatch.setattr(voice_loop_module.sd, "InputStream", lambda **kw: stream)
+    monkeypatch.setattr(voice_loop_module, "play_chime", lambda *a, **k: None)
+    monkeypatch.setattr(voice_loop_module, "AckVoice", lambda phrase: type("A", (), {"path": None, "play": lambda self, wait=True: None})())
+    monkeypatch.setattr(voice_loop_module, "orb", OrbRecorder())
+
+    class ChatListener(FakeListener):
+        def recognize(self, recording):
+            return "Wechsel in den Chatmodus"
+
+    agent = FakeAgent()
+    loop = VoiceLoop(
+        agent, FakeVoice(), console=Console(quiet=True),
+        listener=ChatListener([np.ones(1600, dtype=np.int16)]),
+        detector=FakeDetector(trigger_on_call=2),
+    )
+    loop.run()  # endet von selbst, ohne loop.stop()
+    assert agent.queries == []
+    assert loop.running is False
