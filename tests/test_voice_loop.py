@@ -147,3 +147,22 @@ def test_stop_phrases():
     assert VoiceLoop._is_stop_phrase("jarvis stop")
     assert not VoiceLoop._is_stop_phrase("Stopp die Musik und mach das Licht aus")
     assert not VoiceLoop._is_stop_phrase("Wie spät ist es")
+
+
+def test_closing_phrases_end_follow_up():
+    for text in [
+        "Danke", "Danke schön", "Dankeschön!", "Vielen Dank", "Vielen Dank, Jarvis", "Das war's",
+        "Das war's, danke", "Das wäre alles", "Super, danke dir", "Okay, passt", "Alles klar, danke",
+        "Nein danke", "Nö", "Nichts mehr", "Tschüss", "Danke, bis später", "Perfekt, das war's erstmal",
+        "Ja danke, das reicht", "Ich brauche nichts mehr", "Wir sind fertig",
+    ]:
+        assert VoiceLoop._is_stop_phrase(text), text
+
+
+def test_follow_up_questions_are_not_closing():
+    for text in [
+        "Nein, mach das Licht aus", "Danke, und wie wird das Wetter morgen?", "Das reicht nicht",
+        "Ja", "Okay", "Alles klar", "Super", "Spiel das nochmal", "Danke, kannst du das in Obsidian speichern",
+        "Stopp die Musik", "Was war das letzte Lied",
+    ]:
+        assert not VoiceLoop._is_stop_phrase(text), text

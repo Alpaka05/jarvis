@@ -209,8 +209,8 @@ class VoiceLoop:
                 return
             self.console.print(f"[bold cyan]Du:[/bold cyan] {text}")
             orb.transcript("user", text)
-            if self._is_stop_phrase(text):
-                self.console.print("[dim]Okay, lausche weiter.[/dim]")
+            if self._is_stop_phrase(text):  # „Danke“, „Das war's“ … → Gespräch sofort beenden
+                self.console.print("[dim]Okay, bis später. Lausche wieder auf „Hey Jarvis“.[/dim]")
                 return
 
             with self.console.status("[bold green]Denke nach...[/bold green]", spinner="dots"):
@@ -241,12 +241,36 @@ class VoiceLoop:
         "stopp", "stop", "stopp stopp", "halt", "danke", "danke das reicht", "das reicht", "reicht",
         "okay danke", "ok danke", "danke jarvis", "jarvis stopp", "jarvis stop", "abbrechen", "sei ruhig",
         "ruhe", "schon gut", "passt", "alles gut", "nichts", "nein danke", "vergiss es",
+        "das wäre alles", "das war alles", "das ist alles", "wäre alles", "war alles",
+    }
+
+    # „Danke, das war's“ & Co.: Ein Satz beendet das Gespräch, wenn er nur aus diesen Wörtern
+    # besteht und mindestens ein klares Abschluss-Signal enthält. Sobald etwas Inhaltliches dabei
+    # ist („Nein, mach das Licht aus“), geht er normal an den Agenten.
+    CLOSING_SIGNALS = {
+        "danke", "dankeschön", "dankesehr", "dank", "thanks", "wars", "reicht", "passt", "tschüss",
+        "tschau", "ciao", "bye", "stopp", "stop", "halt", "fertig", "nein", "nö", "nee", "ne", "nichts",
+        "abbrechen", "erledigt",
+    }
+    CLOSING_FILLER = {
+        "jarvis", "das", "war", "es", "wäre", "alles", "schon", "gut", "sehr", "schön", "vielen", "lieben",
+        "herzlichen", "dir", "ok", "okay", "alles", "klar", "super", "perfekt", "top", "prima", "toll",
+        "cool", "genau", "dann", "bis", "später", "erstmal", "erst", "mal", "mehr", "sonst", "weiter",
+        "ja", "danke", "nochmal", "auch", "so", "und", "ich", "brauche", "brauch", "wir", "sind",
     }
 
     @classmethod
     def _is_stop_phrase(cls, text: str) -> bool:
         norm = "".join(ch for ch in text.lower() if ch.isalpha() or ch == " ").strip()
-        return norm in cls.STOP_PHRASES
+        if norm in cls.STOP_PHRASES:
+            return True
+        words = norm.split()
+        return (
+            bool(words)
+            and len(words) <= 8
+            and any(w in cls.CLOSING_SIGNALS for w in words)
+            and all(w in cls.CLOSING_SIGNALS or w in cls.CLOSING_FILLER for w in words)
+        )
 
     def _speak_with_barge_in(self, stream, text: str) -> Optional[str]:
         """Spricht die Antwort. Abbruch durch „Hey Jarvis“ (Rückgabe 'wake') oder durch
