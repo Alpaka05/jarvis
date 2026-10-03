@@ -149,11 +149,26 @@ Ablauf: „Hey Jarvis“ → Bestätigungston → Frage stellen → Antwort wird
 Sekunden Nachfrage-Fenster ohne Wake-Word → zurück zum Lauschen. Reinreden unterbricht die Ausgabe.
 Empfindlichkeit über `WAKE_WORD_THRESHOLD` (0.3 = empfindlicher, 0.7 = strenger).
 
-### Orb-Overlay (in Arbeit)
+### Orb-Overlay
 
-Geplant ist ein schwebender, animierter Orb als eigenes Fenster (Tauri + Three.js), der zeigt, ob
-Jarvis lauscht, nachdenkt oder spricht. Mit `ORB_ENABLED=true` startet Jarvis dafür einen
-WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal erreichbar) und sendet JSON-Ereignisse:
+Ein schwebender, animierter Orb als eigenes Fenster (Tauri + Three.js, in `orb/`) zeigt, ob
+Jarvis lauscht, nachdenkt oder spricht. Das Fenster liegt durchsichtig über dem Bildschirm,
+Klicks gehen hindurch; im Ruhezustand sitzt der Orb klein in einer Ecke. Bedient wird er über
+das Tray-Symbol (aus-/einblenden, Ecke wechseln, beenden).
+
+Bauen und starten (braucht [Rust](https://rustup.rs)):
+
+```bash
+cd orb/src-tauri
+cargo run              # Entwicklung
+cargo build --release  # fertige App unter target/release/jarvis-orb
+```
+
+Jarvis mit `ORB_ENABLED=true` starten; der Orb verbindet sich von selbst (und nach einem
+Neustart von Jarvis wieder). Die Oberfläche lässt sich auch im Browser ansehen:
+`orb/ui/index.html?preview`.
+
+Mit `ORB_ENABLED=true` startet Jarvis einen WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal erreichbar) und sendet JSON-Ereignisse:
 
 | Nachricht | Bedeutung |
 |---|---|
@@ -180,7 +195,7 @@ uv run pytest
 - [x] Langzeitgedächtnis (Fakten über den Nutzer + durchsuchbares Gesprächsprotokoll, SQLite)
 - [x] Wake-Word („Hey Jarvis“) mit openWakeWord, Sprachmodus mit Nachfrage-Fenster
 - [ ] Lokale Spracherkennung (faster-whisper) statt Google
-- [ ] Orb-Overlay (Tauri): Ereignis-Server steht, Fenster folgt
+- [x] Orb-Overlay (Tauri) mit Zuständen, Pegel, Tool-Hinweis und Untertiteln
 - [x] Obsidian-Vault: Notizen durchsuchen, lesen, anlegen, ergänzen
 - [ ] Weitere Tools: Dateisystem, Timer/Erinnerungen, Notion, Wetter-API
 - [ ] Kalender-Backends (CalDAV, Google Calendar)

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis Orb</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  body { -webkit-user-select: none; user-select: none; cursor: default; }
+  #stage { position: fixed; inset: 0; opacity: 0; transition: opacity 0.6s ease; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #subs {
+    position: fixed; left: 50%; bottom: 9%; transform: translateX(-50%);
+    width: min(760px, calc(100% - 64px)); display: grid; gap: 6px; text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    transition: opacity 0.8s ease;
+  }
+  #subs.hidden { opacity: 0; }
+  .sub { min-height: 1.35em; font-size: 20px; line-height: 1.35; color: #e6f6ff; text-wrap: balance;
+         text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 18px rgba(0, 0, 0, 0.7); }
+  .sub b { margin-right: 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
+           vertical-align: 3px; color: var(--accent, #4fd8ff); }
+  .sub.user { color: rgba(230, 246, 255, 0.75); }
+  .sub.user b { color: rgba(230, 246, 255, 0.6); }
+  .sub.error { color: #ff8a96; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl"></canvas><canvas id="hud"></canvas></div>
+<div id="subs" class="hidden">
+  <div class="sub user" id="subUser"></div>
+  <div class="sub" id="subJarvis"></div>
+</div>
+<script src="vendor/three.min.js"></script>
+<script src="orb.js"></script>
+</body>
+</html>

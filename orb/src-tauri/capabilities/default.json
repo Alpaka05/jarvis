@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Das Orb-Fenster darf Ereignisse aus dem Tray-Menü empfangen.",
+  "windows": ["orb"],
+  "permissions": ["core:default"]
+}

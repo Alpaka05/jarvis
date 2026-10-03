@@ -62,3 +62,7 @@ launch/last_start.log
 data/*.db
 data/*.db-journal
 data/ack_*.mp3
+
+# Orb (Tauri): Build-Ausgabe und generierte Schemas
+orb/src-tauri/target/
+orb/src-tauri/gen/
