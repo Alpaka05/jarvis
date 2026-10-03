@@ -18,12 +18,17 @@ Aufrufer blockieren nie, Fehler werden nie nach außen gereicht.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import math
+import os
 import queue
+import subprocess
+import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -178,7 +183,74 @@ class OrbEvents:
                 pass  # Verbindung weg – der Handler räumt auf
 
 
+# ── Orb-Fenster (orb/, Tauri) als Kindprozess ────────────────────────────────
+
+ORB_TARGET_DIR = Path(__file__).resolve().parent.parent / "orb" / "src-tauri" / "target"
+
+
+def find_window_binary(target_dir: Optional[Path] = None) -> Optional[Path]:
+    """Gebautes Orb-Fenster: Release-Build bevorzugt, sonst Debug-Build (cargo run)."""
+    target_dir = target_dir or ORB_TARGET_DIR
+    name = "jarvis-orb.exe" if sys.platform.startswith("win") else "jarvis-orb"
+    for profile in ("release", "debug"):
+        path = target_dir / profile / name
+        if path.is_file():
+            return path
+    return None
+
+
+class OrbWindow:
+    """Startet das Orb-Fenster auf Wunsch (Befehl 'orb') und schließt es mit Jarvis."""
+
+    def __init__(self, events: OrbEvents):
+        self.events = events
+        self._proc: Optional[subprocess.Popen] = None
+        atexit.register(self.close)
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def open(self, port: int = 8765, binary: Optional[Path] = None) -> Tuple[bool, str]:
+        """Startet Server (falls nötig) und Fenster. Gibt (Erfolg, Meldung) zurück."""
+        if self.running or self.events.active:
+            return True, "Der Orb läuft schon."
+        binary = binary or find_window_binary()
+        if binary is None:
+            return False, "Orb-Fenster noch nicht gebaut: cd orb/src-tauri && cargo build --release"
+        if not self.events.enabled:
+            error = self.events.start(port=port)
+            if error:
+                return False, error
+        actual_port = self.events.address.rsplit(":", 1)[-1]
+        try:
+            self._proc = subprocess.Popen(
+                [str(binary)],
+                env={**os.environ, "ORB_PORT": actual_port},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as e:
+            return False, f"Orb-Fenster konnte nicht gestartet werden: {e}"
+        return True, "Orb gestartet."
+
+    def close(self):
+        proc, self._proc = self._proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
 bus = OrbEvents()
+window = OrbWindow(bus)
 
 start = bus.start
 stop = bus.stop
@@ -188,3 +260,4 @@ pcm_level = bus.pcm_level
 tool = bus.tool
 error = bus.error
 transcript = bus.transcript
+open_window = window.open

@@ -96,7 +96,7 @@ uv run playwright install chromium
 | `TTS_ENGINE`, `EDGE_VOICE`, `EDGE_RATE`, `EDGE_PITCH` | Sprachausgabe: `edge` (neuronal, online) oder `system` (offline) |
 | `VOICE_MODE_ON_START`, `WAKE_WORD_THRESHOLD`, `FOLLOW_UP_SECONDS`, `ACK_STYLE`, `ACK_PHRASE` | Sprachmodus: Autostart, Empfindlichkeit, Nachfrage-Fenster, Bestätigung (Chime und/oder gesprochenes „Ja?“) |
 | `TTS_ENABLED`, `VOICE_NAME`, `LANGUAGE` | Sprachausgabe an/aus, Systemstimme, Sprache |
-| `ORB_ENABLED`, `ORB_PORT` | Ereignis-Server für das Orb-Overlay (siehe unten), Standard aus bzw. Port 8765 |
+| `ORB_ENABLED`, `ORB_PORT` | Ereignis-Server für das Orb-Overlay schon beim Start (sonst erst mit `orb`), Port Standard 8765 |
 
 ### Spotify
 
@@ -168,11 +168,12 @@ cargo run              # Entwicklung
 cargo build --release  # fertige App unter target/release/jarvis-orb
 ```
 
-Jarvis mit `ORB_ENABLED=true` starten; der Orb verbindet sich von selbst (und nach einem
-Neustart von Jarvis wieder). Die Oberfläche lässt sich auch im Browser ansehen:
-`orb/ui/index.html?preview`.
+Danach im Jarvis-Chat `orb` eintippen: Jarvis startet das Fenster und schließt es beim Beenden
+wieder. Wer den Orb lieber selbst startet, setzt `ORB_ENABLED=true`; der Orb verbindet sich
+dann von selbst (auch nach einem Neustart von Jarvis). Die Oberfläche lässt sich auch im
+Browser ansehen: `orb/ui/index.html?preview`.
 
-Mit `ORB_ENABLED=true` startet Jarvis einen WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal erreichbar) und sendet JSON-Ereignisse:
+Für den Orb startet Jarvis einen WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal erreichbar) und sendet JSON-Ereignisse:
 
 | Nachricht | Bedeutung |
 |---|---|

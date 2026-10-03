@@ -1,5 +1,6 @@
 """Orb-Ereignisse: Pegel-Skala, Zustandslogik und echter Versand über WebSocket."""
 import json
+import sys
 import time
 
 import numpy as np
@@ -89,3 +90,54 @@ def test_port_in_use_is_reported_not_raised(server):
     error = other.start(port=port)
     assert error and error.startswith("Orb-Server nicht gestartet")
     assert not other.enabled
+
+
+# ── Orb-Fenster auf Befehl ('orb') ───────────────────────────────────────────
+
+from core.orb import OrbWindow, find_window_binary  # noqa: E402
+
+
+def _fake_binary(path, out_file):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'#!/bin/sh\necho "$ORB_PORT" > "{out_file}"\nexec sleep 30\n')
+    path.chmod(0o755)
+    return path
+
+
+def test_find_window_binary_prefers_release(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert find_window_binary(tmp_path) is None
+    debug = _fake_binary(tmp_path / "debug" / "jarvis-orb", tmp_path / "x")
+    assert find_window_binary(tmp_path) == debug
+    release = _fake_binary(tmp_path / "release" / "jarvis-orb", tmp_path / "x")
+    assert find_window_binary(tmp_path) == release
+
+
+def test_open_window_without_build_explains_how_to_build(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.orb.ORB_TARGET_DIR", tmp_path)
+    bus = OrbEvents()
+    ok, message = OrbWindow(bus).open()
+    assert not ok and "cargo build --release" in message
+    assert not bus.enabled  # ohne Fenster kein Server
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Shell-Skript als Ersatz-Fenster")
+def test_open_window_starts_server_and_passes_port(tmp_path):
+    pytest.importorskip("websockets")
+    port_file = tmp_path / "port"
+    binary = _fake_binary(tmp_path / "jarvis-orb", port_file)
+    bus = OrbEvents()
+    window = OrbWindow(bus)
+    try:
+        ok, _ = window.open(port=0, binary=binary)
+        assert ok and bus.enabled and window.running
+        deadline = time.time() + 5
+        while not port_file.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert port_file.read_text().strip() == bus.address.rsplit(":", 1)[-1]
+        assert window.open(binary=binary) == (True, "Der Orb läuft schon.")
+        window.close()
+        assert not window.running
+    finally:
+        window.close()
+        bus.stop()

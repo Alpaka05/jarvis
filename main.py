@@ -68,7 +68,7 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
         f"🧠 [bold yellow]Gedächtnis:[/bold yellow] [green]{agent.memory.count_facts() if agent.memory else 0} Fakten[/green] [dim]({config.MEMORY_DB.name}, tippe 'memory')[/dim]",
         f"🔊 [bold yellow]Sprachausgabe:[/bold yellow] {_yes_no(voice.enabled, voice.label, 'deaktiviert')}",
         f"🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
-        f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, 'aus (ORB_ENABLED=true)')}",
+        f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, "aus [dim](tippe 'orb')[/dim]")}",
     ]
     for note in agent.notes:
         rows.append(f"⚠️  [yellow]{note}[/yellow]")
@@ -90,6 +90,7 @@ def show_help():
 [bold yellow]Befehle:[/bold yellow]
 - [cyan]wake[/cyan]         Sprachmodus: dauerhaft lauschen, "Hey Jarvis" sagen, fragen (Strg+C beendet)
 - [cyan]v[/cyan] / [cyan]voice[/cyan]   einmalige Spracheingabe über das Mikrofon
+- [cyan]orb[/cyan]          schwebenden Orb einblenden (schließt sich mit Jarvis)
 - [cyan]reset[/cyan]        Gesprächsverlauf löschen
 - [cyan]spotify login[/cyan]  Spotify einmalig mit deinem Konto verknüpfen
 - [cyan]kosten[/cyan]       Token-Verbrauch und geschätzte Kosten dieser Sitzung
@@ -243,6 +244,10 @@ def main():
                 facts = agent.memory.list_facts() if agent.memory else []
                 body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{f['category']}[/cyan]  {f['content']}" for f in facts) or "[dim]Noch leer.[/dim]"
                 console.print(Panel(body, title="[bold magenta]Gedächtnis[/bold magenta]", border_style="magenta"))
+                continue
+            if cmd == "orb":
+                ok, message = orb.open_window(port=config.ORB_PORT)
+                console.print(f"[{'green' if ok else 'red'}]{message}[/]")
                 continue
             if cmd in ("wake", "sprachmodus", "hey", "zuhören", "listen"):
                 voice.stop()
