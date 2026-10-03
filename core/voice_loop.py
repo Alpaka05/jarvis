@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from config import config
-from core import platform_utils
+from core import orb, platform_utils
 from core.agent import JarvisAgent
 from core.voice import VoiceEngine
 from core.voice_input import VoiceInputListener, rms
@@ -158,6 +158,7 @@ class VoiceLoop:
             )
         )
         setattr(self.agent, "voice_mode", True)
+        orb.state("idle")
         try:
             with platform_utils.open_audio_stream(
                 lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
@@ -167,6 +168,7 @@ class VoiceLoop:
                     frame, _ = stream.read(FRAME_SAMPLES)
                     if self.detector.triggered(frame):
                         self._interaction(stream)
+                        orb.state("idle")
                         self.detector.reset()
         except KeyboardInterrupt:
             pass
@@ -174,6 +176,7 @@ class VoiceLoop:
             self.running = False
             self.voice.stop()
             setattr(self.agent, "voice_mode", False)
+            orb.state("idle")
 
     def stop(self):
         self.running = False
@@ -183,9 +186,11 @@ class VoiceLoop:
     def _interaction(self, stream):
         if self.on_wake:
             self.on_wake()
+        orb.state("wake")
         self._acknowledge()
         # Eigene Bestätigung nicht als Sprache aufnehmen
         stream.read(int(SAMPLE_RATE * 0.15))
+        orb.state("listening")
         self.console.print("[bold yellow]🎤 Ich höre ...[/bold yellow]")
         start_timeout = 6.0
 
@@ -195,12 +200,15 @@ class VoiceLoop:
                 self.console.print("[dim]Nichts gehört, lausche weiter.[/dim]")
                 return
             play_chime("done")
+            orb.state("thinking")
             text = self.listener.recognize(recording)
             if not text:
                 self.console.print("[dim]Nicht verstanden.[/dim]")
+                orb.error("Nicht verstanden")
                 play_chime("fail")
                 return
             self.console.print(f"[bold cyan]Du:[/bold cyan] {text}")
+            orb.transcript("user", text)
             if self._is_stop_phrase(text):
                 self.console.print("[dim]Okay, lausche weiter.[/dim]")
                 return
@@ -210,12 +218,15 @@ class VoiceLoop:
             self.console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
             if getattr(self.agent, "last_usage", None) and self.agent.last_usage.calls:
                 self.console.print(f"  [dim]{self.agent.usage_summary(self.agent.last_usage)}[/dim]")
+            orb.transcript("assistant", response)
 
             interrupted = self._speak_with_barge_in(stream, response)
             if interrupted == "wake":
                 # „Hey Jarvis“ mitten in der Antwort: wie ein neuer Aufruf behandeln
+                orb.state("wake")
                 play_chime("wake")
                 stream.read(int(SAMPLE_RATE * 0.15))
+                orb.state("listening")
                 self.console.print("[bold yellow]🎤 Ich höre ...[/bold yellow]")
                 start_timeout = 6.0
                 continue
@@ -223,6 +234,7 @@ class VoiceLoop:
             start_timeout = 1.5 if interrupted else self.follow_up_seconds
             if start_timeout <= 0:
                 return
+            orb.state("listening")
             self.console.print("[dim]… noch etwas? (ohne Wake-Word)[/dim]")
 
     STOP_PHRASES = {

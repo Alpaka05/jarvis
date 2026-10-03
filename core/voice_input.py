@@ -19,7 +19,7 @@ import sounddevice as sd
 import speech_recognition as sr
 from rich.console import Console
 
-from core import platform_utils
+from core import orb, platform_utils
 
 console = Console()
 
@@ -128,6 +128,7 @@ class VoiceInputListener:
         while True:
             chunk, _ = stream.read(self.chunk_size)
             elapsed += len(chunk) / self.sample_rate
+            orb.pcm_level(chunk, "mic")
 
             if use_vad:
                 prob = self.speech_probability(chunk)

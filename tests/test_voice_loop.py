@@ -65,6 +65,20 @@ class FakeVoice:
         pass
 
 
+class OrbRecorder:
+    def __init__(self):
+        self.events = []
+
+    def state(self, name):
+        self.events.append(name)
+
+    def transcript(self, role, text):
+        self.events.append(f"{role}: {text}")
+
+    def error(self, message=""):
+        self.events.append(f"error: {message}")
+
+
 class FakeAgent:
     def __init__(self):
         self.queries = []
@@ -89,6 +103,8 @@ def test_voice_loop_wake_record_answer_and_stop(monkeypatch):
             pass
 
     monkeypatch.setattr(voice_loop_module, "AckVoice", SilentAck)
+    orb = OrbRecorder()
+    monkeypatch.setattr(voice_loop_module, "orb", orb)
 
     agent, voice = FakeAgent(), FakeVoice()
     loop = VoiceLoop(
@@ -112,6 +128,17 @@ def test_voice_loop_wake_record_answer_and_stop(monkeypatch):
     assert voice.spoken == ["Es ist zwölf Uhr."]
     assert loop.detector.resets >= 2  # Start + nach Erkennung
     assert agent.__dict__.get("voice_mode") is False  # nach run() zurückgesetzt
+    assert orb.events == [
+        "idle",
+        "wake",
+        "listening",
+        "thinking",
+        "user: wie spät ist es",
+        "assistant: Es ist zwölf Uhr.",
+        "listening",  # Nachfrage-Fenster
+        "idle",  # nichts mehr gehört → zurück zum Lauschen auf das Wake-Word
+        "idle",  # Sprachmodus beendet
+    ]
 
 
 def test_stop_phrases():

@@ -101,6 +101,10 @@ class Config:
     SILENCE_LIMIT_SECONDS: float = float(_env("SILENCE_LIMIT_SECONDS", "1.4"))  # Pause, die den Satz beendet
     VAD_THRESHOLD: float = float(_env("VAD_THRESHOLD", "0.5"))  # Silero-VAD: ab wann gilt ein Block als Sprache
 
+    # ── Orb (schwebendes Overlay) ────────────────────────────────────────────
+    ORB_ENABLED: bool = _bool("ORB_ENABLED", False)  # WebSocket-Server für das Orb-Fenster starten
+    ORB_PORT: int = int(_env("ORB_PORT", "8765"))  # lauscht nur auf 127.0.0.1
+
     # ── Plattform ────────────────────────────────────────────────────────────
     IS_WINDOWS = IS_WINDOWS
     IS_MAC = IS_MAC

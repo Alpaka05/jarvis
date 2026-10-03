@@ -6,7 +6,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, InvalidResponse, Prompt
 
 from config import config
-from core import platform_utils
+from core import orb, platform_utils
 from core.agent import JarvisAgent
 from core.llm import ToolCall
 from core.voice import VoiceEngine
@@ -68,6 +68,7 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
         f"🧠 [bold yellow]Gedächtnis:[/bold yellow] [green]{agent.memory.count_facts() if agent.memory else 0} Fakten[/green] [dim]({config.MEMORY_DB.name}, tippe 'memory')[/dim]",
         f"🔊 [bold yellow]Sprachausgabe:[/bold yellow] {_yes_no(voice.enabled, voice.label, 'deaktiviert')}",
         f"🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
+        f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, 'aus (ORB_ENABLED=true)')}",
     ]
     for note in agent.notes:
         rows.append(f"⚠️  [yellow]{note}[/yellow]")
@@ -156,6 +157,7 @@ def on_tool_call(call: ToolCall):
     if len(args) > 120:
         args = args[:117] + "..."
     console.print(f"  [dim]⚙ {call.name} {args}[/dim]")
+    orb.tool(call.name)
 
 
 def on_tool_result(call: ToolCall, result: ToolResult):
@@ -197,6 +199,10 @@ def main():
         on_notice=lambda m: console.print(f"[yellow]⚠ {m}[/yellow]"),
     )
     voice = VoiceEngine()
+    if config.ORB_ENABLED:
+        orb_error = orb.start(port=config.ORB_PORT)
+        if orb_error:
+            agent.notes.append(orb_error)
     voice_listener = None  # wird bei Bedarf geladen (Mikrofon-Bibliotheken)
 
     print_status(agent, voice)
@@ -252,30 +258,40 @@ def main():
                         vad_threshold=config.VAD_THRESHOLD,
                         silence_limit=config.SILENCE_LIMIT_SECONDS,
                     )
+                orb.state("listening")
                 user_input = voice_listener.record_and_recognize()
                 if not user_input:
+                    orb.state("idle")
                     continue
 
             voice.stop()  # laufende Ausgabe abbrechen, wenn eine neue Anfrage kommt
+            orb.transcript("user", user_input)
+            orb.state("thinking")
             try:
                 with console.status("[bold green]Denke nach... [dim](Strg+C bricht diese Frage ab)[/dim][/bold green]", spinner="dots"):
                     response = agent.process_query(user_input)
             except KeyboardInterrupt:
+                orb.state("idle")
                 console.print("[yellow]Frage abgebrochen.[/yellow]")
                 continue
 
             console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
             if agent.last_usage.calls:
                 console.print(f"  [dim]{agent.usage_summary(agent.last_usage)}[/dim]")
+            orb.transcript("assistant", response)
             voice.speak(response)
-            if voice.enabled:
+            if voice.is_speaking():
                 console.print("[dim]Enter stoppt die Sprachausgabe.[/dim]")
+            else:
+                orb.state("idle")
 
         except KeyboardInterrupt:
             voice.stop()
             console.print("\n[bold yellow]Abgebrochen. Bis später![/bold yellow]")
             sys.exit(0)
         except Exception as e:
+            orb.error(str(e))
+            orb.state("idle")
             console.print(f"[bold red]Fehler:[/bold red] {e}")
 
 

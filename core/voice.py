@@ -17,7 +17,7 @@ from typing import List, Optional
 import numpy as np
 
 from config import config
-from core import platform_utils
+from core import orb, platform_utils
 
 try:  # Mikrofon-Überwachung und Wiedergabe sind optional
     import sounddevice as sd
@@ -105,7 +105,7 @@ class VoiceEngine:
                 self._current.set()
             proc = self._process
             self._process = None
-            self._speaking = False
+            self._end_speaking()
         if proc is not None:
             try:
                 proc.terminate()
@@ -125,6 +125,7 @@ class VoiceEngine:
         with self._lock:
             self._current = stop_event
             self._speaking = True
+            orb.state("speaking")
         worker = threading.Thread(target=self._run, args=(cleaned, stop_event, listen_for_interrupt), daemon=True)
         worker.start()
         if block:
@@ -140,8 +141,15 @@ class VoiceEngine:
             self._run_system(text, stop_event, listen_for_interrupt)
         finally:
             with self._lock:
-                if self._current is stop_event:
-                    self._speaking = False
+                if self._current is stop_event:  # nicht schon von einer neuen Äußerung abgelöst
+                    self._end_speaking()
+
+    def _end_speaking(self):
+        """Unter self._lock aufrufen. Meldet „idle“ an den Orb, bevor is_speaking() False liefert –
+        so überholt der Zustand, den der Aufrufer danach setzt (z.B. Nachfrage-Fenster), es sicher."""
+        if self._speaking:
+            orb.state("idle")
+        self._speaking = False
 
     def _run_edge(self, text: str, stop_event: threading.Event, listen_for_interrupt: bool) -> bool:
         """Satzweise Pipeline: synthetisieren im Hintergrund, abspielen sobald der erste Satz da ist."""
@@ -180,12 +188,15 @@ class VoiceEngine:
         return True
 
     @staticmethod
-    def _write_pcm(out, pcm: np.ndarray, stop_event: threading.Event, chunk: int = 2400):
+    def _write_pcm(out, pcm: np.ndarray, stop_event: threading.Event, chunk: int = 800):
+        # 800 Samples = 33 ms: kurze Stop-Latenz und ~30 Pegelwerte pro Sekunde für den Orb
         data = pcm.reshape(-1, 1)
         for i in range(0, len(data), chunk):
             if stop_event.is_set():
                 break
-            out.write(data[i : i + chunk])
+            piece = data[i : i + chunk]
+            orb.pcm_level(piece, "tts")
+            out.write(piece)
 
     def _run_system(self, text: str, stop_event: threading.Event, listen_for_interrupt: bool):
         proc = platform_utils.speak_system_process(text, self.voice)
