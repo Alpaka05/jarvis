@@ -90,7 +90,8 @@ def show_help():
 [bold yellow]Befehle:[/bold yellow]
 - [cyan]wake[/cyan]         Sprachmodus: dauerhaft lauschen, "Hey Jarvis" sagen, fragen (Strg+C beendet)
 - [cyan]v[/cyan] / [cyan]voice[/cyan]   einmalige Spracheingabe über das Mikrofon
-- [cyan]orb[/cyan]          schwebenden Orb einblenden (schließt sich mit Jarvis)
+- [cyan]orb[/cyan] / [cyan]orb aus[/cyan]  schwebenden Orb starten / schließen (geht auch per Sprache:
+                 "Schalte den Orb ein"; schließt sich mit Jarvis)
 - [cyan]reset[/cyan]        Gesprächsverlauf löschen
 - [cyan]spotify login[/cyan]  Spotify einmalig mit deinem Konto verknüpfen
 - [cyan]kosten[/cyan]       Token-Verbrauch und geschätzte Kosten dieser Sitzung
@@ -245,8 +246,8 @@ def main():
                 body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{f['category']}[/cyan]  {f['content']}" for f in facts) or "[dim]Noch leer.[/dim]"
                 console.print(Panel(body, title="[bold magenta]Gedächtnis[/bold magenta]", border_style="magenta"))
                 continue
-            if cmd == "orb":
-                ok, message = orb.open_window(port=config.ORB_PORT)
+            if cmd in ("orb", "orb an", "orb aus"):
+                ok, message = orb.close_window() if cmd == "orb aus" else orb.open_window(port=config.ORB_PORT)
                 console.print(f"[{'green' if ok else 'red'}]{message}[/]")
                 continue
             if cmd in ("wake", "sprachmodus", "hey", "zuhören", "listen"):

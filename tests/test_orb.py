@@ -141,3 +141,35 @@ def test_open_window_starts_server_and_passes_port(tmp_path):
     finally:
         window.close()
         bus.stop()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Shell-Skript als Ersatz-Fenster")
+def test_orb_tool_switches_window_on_and_off(tmp_path, monkeypatch):
+    pytest.importorskip("websockets")
+    import core.orb as orb_module
+    from config import config
+    from tools.orb_tool import OrbTool
+
+    bus = OrbEvents()
+    window = OrbWindow(bus)
+    binary = _fake_binary(tmp_path / "release" / "jarvis-orb", tmp_path / "port")
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(orb_module, "ORB_TARGET_DIR", tmp_path)
+    monkeypatch.setattr(orb_module, "bus", bus)
+    monkeypatch.setattr(orb_module, "window", window)
+    monkeypatch.setattr(orb_module, "open_window", window.open)
+    monkeypatch.setattr(orb_module, "close_window", window.shut)
+    monkeypatch.setattr(config, "ORB_PORT", 0)
+    tool = OrbTool()
+    try:
+        assert tool.execute(action="status").output == "Der Orb ist aus."
+        result = tool.execute(action="on")
+        assert result.success and window.running and binary.exists()
+        assert tool.execute(action="status").output == "Der Orb läuft."
+        result = tool.execute(action="off")
+        assert result.success and result.output == "Orb ausgeschaltet." and not window.running
+        assert tool.execute(action="off").output == "Der Orb ist schon aus."
+        assert not tool.execute(action="blinken").success
+    finally:
+        window.close()
+        bus.stop()

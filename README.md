@@ -169,8 +169,8 @@ cargo run              # Entwicklung
 cargo build --release  # fertige App unter target/release/jarvis-orb
 ```
 
-Danach im Jarvis-Chat `orb` eintippen: Jarvis startet das Fenster und schließt es beim Beenden
-wieder. Wer den Orb lieber selbst startet, setzt `ORB_ENABLED=true`; der Orb verbindet sich
+Danach im Jarvis-Chat `orb` eintippen (`orb aus` schließt ihn) oder Jarvis einfach sagen
+„Schalte den Orb ein/aus“. Jarvis startet das Fenster und schließt es beim Beenden wieder. Wer den Orb lieber selbst startet, setzt `ORB_ENABLED=true`; der Orb verbindet sich
 dann von selbst (auch nach einem Neustart von Jarvis). Die Oberfläche lässt sich auch im
 Browser ansehen: `orb/ui/index.html?preview`.
 

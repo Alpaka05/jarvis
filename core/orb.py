@@ -235,6 +235,15 @@ class OrbWindow:
             return False, f"Orb-Fenster konnte nicht gestartet werden: {e}"
         return True, "Orb gestartet."
 
+    def shut(self) -> Tuple[bool, str]:
+        """Schließt das Fenster auf Wunsch. Gibt (Erfolg, Meldung) zurück."""
+        if self.running:
+            self.close()
+            return True, "Orb ausgeschaltet."
+        if self.events.active:
+            return False, "Der Orb wurde nicht von Jarvis gestartet – bitte über das Tray-Symbol beenden."
+        return True, "Der Orb ist schon aus."
+
     def close(self):
         proc, self._proc = self._proc, None
         if proc is None or proc.poll() is not None:
@@ -261,3 +270,4 @@ tool = bus.tool
 error = bus.error
 transcript = bus.transcript
 open_window = window.open
+close_window = window.shut

@@ -4,8 +4,9 @@
  * leuchtende Kugel (Three.js) und darüber die HUD-Ringe (Canvas 2D). Ereignisformat siehe README,
  * Abschnitt „Orb-Overlay“. Ohne Verbindung bleibt das Fenster leer und versucht es alle 2 s erneut.
  *
- * Der Orb sitzt immer klein in einer Ecke und erscheint erst mit dem Wake-Word („wake“); kurz
- * nachdem Jarvis wieder in den Ruhezustand geht, blendet er sich aus.
+ * Der Orb sitzt immer klein in einer Ecke und erscheint erst mit dem Wake-Word („wake“) – oder
+ * sofort, wenn er mitten im Gespräch gestartet wird; kurz nachdem Jarvis wieder in den
+ * Ruhezustand geht, blendet er sich aus.
  *
  * Zum Ausprobieren im Browser: index.html?preview (dunkler Hintergrund, Orb immer sichtbar) und
  * optional &port=8765.
@@ -40,7 +41,7 @@
   let corner = CORNERS.includes(params.get("corner")) ? params.get("corner") : "br";
   try { corner = localStorage.getItem("orb.corner") || corner; } catch (e) { /* ohne Speicher: Standardecke */ }
 
-  let state = "idle", connected = false, shown = ALWAYS_SHOWN, renderUntil = 0;
+  let state = "idle", connected = false, fresh = false, shown = ALWAYS_SHOWN, renderUntil = 0;
   let toolName = "", toolUntil = 0, errorUntil = 0;
   let levelTarget = 0, levelAt = 0, level = 0;
   let ring1 = 0, ring2 = 0, spinA = 0, flash = 0, shake = 0, t = 0, moving = true;
@@ -418,6 +419,9 @@
     const now = performance.now();
     switch (msg.type) {
       case "state":
+        // Mitten im Gespräch gestartet (z.B. „Schalte den Orb ein“): gleich zeigen statt erst beim nächsten Wake-Word
+        if (fresh && msg.state !== "idle" && !shown) { shown = true; updateVisibility(); }
+        fresh = false;
         setState(msg.state);
         break;
       case "level":
@@ -443,7 +447,7 @@
   function connect() {
     let ws;
     try { ws = new WebSocket(`ws://127.0.0.1:${PORT}`); } catch (e) { setTimeout(connect, 2000); return; }
-    ws.onopen = () => { connected = true; updateVisibility(); };
+    ws.onopen = () => { connected = true; fresh = true; updateVisibility(); };
     ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch (err) { /* kaputte Nachricht ignorieren */ } };
     ws.onclose = () => {
       if (connected) { connected = false; shown = ALWAYS_SHOWN; state = "idle"; updateVisibility(); }
