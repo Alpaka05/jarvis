@@ -180,6 +180,9 @@ class VoiceInputListener:
         except sr.RequestError as e:
             console.print(f"[bold red]Spracherkennung nicht erreichbar:[/bold red] {e}")
             return ""
+        except OSError as e:  # z.B. FLAC-Konverter fehlt oder läuft nicht (Apple Silicon: brew install flac)
+            console.print(f"[bold red]Spracherkennung fehlgeschlagen:[/bold red] {e}")
+            return ""
 
     # ── Komfort: eigener Stream (Konsolenbefehl 'v') ─────────────────────────
 

@@ -53,3 +53,14 @@ def test_hysteresis_keeps_quiet_speech_tail():
     blocks = [loud()] * 5 + quiet_tail + [silence()] * 60
     rec = listener.record_from_stream(FakeStream(blocks), silence_limit=0.3, start_timeout=5, threshold=0.08)
     assert len(rec) >= 960 * 15
+
+
+def test_recognize_survives_broken_flac_converter(monkeypatch):
+    """Ein kaputter FLAC-Konverter (z.B. Intel-Binary auf Apple Silicon) beendet den Sprachmodus nicht."""
+    listener = VoiceInputListener(use_vad=False)
+
+    def bad_cpu(*args, **kwargs):
+        raise OSError(86, "Bad CPU type in executable")
+
+    monkeypatch.setattr(listener.recognizer, "recognize_google", bad_cpu)
+    assert listener.recognize(loud().reshape(-1)) == ""

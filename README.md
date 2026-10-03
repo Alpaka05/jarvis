@@ -65,6 +65,10 @@ cp .env.example .env          # Windows: copy .env.example .env
 
 Ohne uv: `python -m venv .venv`, aktivieren, `pip install -r requirements.txt`.
 
+**macOS mit Apple Silicon:** `brew install flac`. Die Spracherkennung braucht einen
+FLAC-Konverter; der in `speech_recognition` mitgelieferte läuft nur auf Intel-Macs
+(Fehler „Bad CPU type in executable“).
+
 Optionales Extra für autonome Browser-Aufgaben (browser-use):
 
 ```bash
