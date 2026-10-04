@@ -8,7 +8,8 @@
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use std::time::Duration;
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 fn main() {
     let port: u16 = std::env::var("ORB_PORT")
@@ -38,6 +39,14 @@ fn main() {
             cover_work_area(&window)?;
             window.set_ignore_cursor_events(true)?;
             window.show()?;
+
+            // Monitore können sich ändern (an-/abgesteckt, Hauptbildschirm gewechselt, Ruhezustand).
+            // macOS schiebt das Fenster dann woandershin und behält die alte Größe – der Orb säße
+            // mitten im Bild und wäre zu groß. Deshalb regelmäßig nachziehen.
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(2));
+                let _ = cover_work_area(&window);
+            });
 
             let toggle = MenuItem::with_id(app, "toggle", "Orb ausblenden", true, None::<&str>)?;
             let corner = MenuItem::with_id(app, "corner", "Ecke wechseln", true, None::<&str>)?;
@@ -72,11 +81,26 @@ fn main() {
 }
 
 /// Legt das Fenster über den nutzbaren Bereich des Hauptbildschirms (ohne Dock/Taskleiste).
+/// Passt es schon, passiert nichts.
+///
+/// Gerechnet wird in logischen Punkten: Physische Pixel würden mit dem Skalierungsfaktor des
+/// Bildschirms umgerechnet, auf dem das Fenster gerade liegt – bei Retina + externem Monitor
+/// (Faktor 2 vs. 1) wird das Fenster sonst doppelt so groß.
 fn cover_work_area(window: &WebviewWindow) -> tauri::Result<()> {
-    if let Some(monitor) = window.primary_monitor()? {
-        let area = monitor.work_area();
-        window.set_position(area.position)?;
-        window.set_size(area.size)?;
+    let Some(monitor) = window.primary_monitor()? else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let pos: LogicalPosition<f64> = area.position.to_logical(monitor.scale_factor());
+    let size: LogicalSize<f64> = area.size.to_logical(monitor.scale_factor());
+    let scale = window.scale_factor()?;
+    let cur_pos: LogicalPosition<f64> = window.outer_position()?.to_logical(scale);
+    let cur_size: LogicalSize<f64> = window.outer_size()?.to_logical(scale);
+    if (cur_pos.x - pos.x).abs() > 1.0 || (cur_pos.y - pos.y).abs() > 1.0 {
+        window.set_position(pos)?;
+    }
+    if (cur_size.width - size.width).abs() > 1.0 || (cur_size.height - size.height).abs() > 1.0 {
+        window.set_size(size)?;
     }
     Ok(())
 }
