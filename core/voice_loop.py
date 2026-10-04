@@ -161,16 +161,13 @@ class VoiceLoop:
         setattr(self.agent, "voice_mode", True)
         orb.state("idle")
         try:
-            with platform_utils.open_audio_stream(
-                lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
-            ) as stream:
-                self.detector.reset()
-                while self.running:
-                    frame, _ = stream.read(FRAME_SAMPLES)
-                    if self.detector.triggered(frame):
-                        self._interaction(stream)
-                        orb.state("idle")
-                        self.detector.reset()
+            while self.running:
+                # Bei geänderten Audiogeräten Mikrofon schließen und neu öffnen – dabei liest
+                # PortAudio die Geräteliste frisch ein (siehe platform_utils.audio_devices_changed)
+                with platform_utils.open_audio_stream(
+                    lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+                ) as stream:
+                    self._listen(stream)
         except KeyboardInterrupt:
             pass
         finally:
@@ -181,6 +178,25 @@ class VoiceLoop:
 
     def stop(self):
         self.running = False
+
+    DEVICE_CHECK_FRAMES = 25  # ~2 s bei 80 ms pro Frame
+
+    def _listen(self, stream):
+        """Lauscht auf das Wake-Word, bis der Modus endet oder sich die Audiogeräte ändern."""
+        self.detector.reset()
+        frames = 0
+        while self.running:
+            frame, _ = stream.read(FRAME_SAMPLES)
+            if self.detector.triggered(frame):
+                self._interaction(stream)
+                orb.state("idle")
+                self.detector.reset()
+                frames = self.DEVICE_CHECK_FRAMES  # nach dem Gespräch gleich prüfen
+            frames += 1
+            if frames >= self.DEVICE_CHECK_FRAMES:
+                frames = 0
+                if platform_utils.audio_devices_changed():
+                    return
 
     # ── Eine Interaktion (mit Nachfrage-Fenster) ─────────────────────────────
 

@@ -202,3 +202,30 @@ def test_text_mode_request_leaves_voice_mode_without_agent(monkeypatch):
     loop.run()  # endet von selbst, ohne loop.stop()
     assert agent.queries == []
     assert loop.running is False
+
+
+def test_mic_stream_is_reopened_when_audio_devices_change(monkeypatch):
+    opened = []
+
+    def new_stream(**kw):
+        opened.append(kw)
+        return FakeStream([np.zeros((FRAME_SAMPLES, 1), dtype=np.int16) for _ in range(5)])
+
+    monkeypatch.setattr(voice_loop_module.sd, "InputStream", new_stream)
+    monkeypatch.setattr(voice_loop_module, "orb", OrbRecorder())
+    checks = {"n": 0}
+
+    def changed():
+        checks["n"] += 1
+        if checks["n"] == 1:
+            return True  # erste Prüfung: Geräte haben sich geändert → neu öffnen
+        loop.stop()
+        return False
+
+    monkeypatch.setattr(voice_loop_module.platform_utils, "audio_devices_changed", changed)
+    loop = VoiceLoop(
+        FakeAgent(), FakeVoice(), console=Console(quiet=True),
+        listener=FakeListener([]), detector=FakeDetector(trigger_on_call=-1),
+    )
+    loop.run()
+    assert len(opened) == 2

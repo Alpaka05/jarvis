@@ -97,7 +97,7 @@ def tts_available() -> bool:
 _output_device_cache: dict = {}
 
 # PortAudio (PaMacCore) schreibt Warnungen wie „||PaMacCore (AUHAL)|| … '!obj'“ direkt auf
-# Dateideskriptor 2, vorbei an Python. Ursache ist meist eine veraltete Geräteliste, z.B. nach
+# die Dateideskriptoren (per printf auf stdout), vorbei an Python. Ursache ist meist eine veraltete Geräteliste, z.B. nach
 # einem Bluetooth-Wechsel: PortAudio liest die Geräte nur bei der Initialisierung ein.
 _audio_lock = threading.RLock()
 _open_streams = 0
@@ -107,25 +107,33 @@ _stderr_lock = threading.RLock()
 _native_stderr_silenced = False
 
 
-def silence_native_stderr() -> bool:
-    """Leitet Dateideskriptor 2 dauerhaft nach /dev/null, Pythons sys.stderr bleibt im Terminal.
+def silence_native_output() -> bool:
+    """Leitet die Dateideskriptoren 1 und 2 dauerhaft nach /dev/null; Pythons sys.stdout und
+    sys.stderr schreiben weiter ins Terminal.
 
-    C-Bibliotheken (PortAudio, onnxruntime …) schreiben über fd 2 und kommen so nicht mehr durch,
-    Python-Tracebacks und rich-Ausgaben landen weiter auf dem echten stderr. Kindprozesse erben
-    das stumme fd 2. Einmal pro Prozess, idempotent.
+    C-Bibliotheken schreiben direkt auf die Deskriptoren – PortAudio (PaMacCore) etwa per printf
+    auf stdout, onnxruntime auf stderr – und kommen so nicht mehr durch. Python-Ausgaben, rich und
+    Tracebacks bleiben sichtbar. Kindprozesse erben die stummen Deskriptoren. Einmal pro Prozess,
+    idempotent.
     """
     global _native_stderr_silenced
     with _stderr_lock:
         if _native_stderr_silenced:
             return True
         try:
-            sys.stderr.flush()
-            fd = sys.stderr.fileno()
-            real = os.dup(fd)
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(devnull, fd)
-            os.close(devnull)
-            sys.stderr = os.fdopen(real, "w", encoding="utf-8", errors="replace", buffering=1)
+            replaced = []
+            for name in ("stdout", "stderr"):
+                stream = getattr(sys, name)
+                stream.flush()
+                fd = stream.fileno()
+                real = os.dup(fd)
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, fd)
+                os.close(devnull)
+                encoding = getattr(stream, "encoding", None) or "utf-8"
+                replaced.append((name, os.fdopen(real, "w", encoding=encoding, errors="replace", buffering=1)))
+            for name, stream in replaced:
+                setattr(sys, name, stream)
         except Exception:
             return False
         _native_stderr_silenced = True
@@ -169,6 +177,7 @@ def refresh_audio_devices() -> None:
 
     Nur sicher, wenn gerade kein Stream offen ist; open_audio_stream() kümmert sich darum.
     """
+    global _device_signature
     try:
         import sounddevice as sd
 
@@ -178,6 +187,71 @@ def refresh_audio_devices() -> None:
     except Exception:
         pass
     _output_device_cache.clear()
+    _device_signature = audio_device_signature()
+
+
+# ── Geräteänderungen erkennen (macOS) ───────────────────────────────────────
+# PortAudio kennt nur die Geräte vom letzten Initialisieren. Läuft der Sprachmodus lange, bleibt
+# das Mikrofon dauerhaft offen, und die Liste veraltet, sobald z.B. ein Monitor mit Lautsprechern
+# schlafen geht. Ausgaben landen dann auf nicht mehr vorhandenen Geräten („'!obj'“, -10851,
+# kratziger Ton). CoreAudio direkt zu fragen kostet nur Mikrosekunden.
+
+_device_signature = None
+_coreaudio = None
+
+
+def _coreaudio_lib():
+    global _coreaudio
+    if _coreaudio is None:
+        import ctypes
+
+        class Address(ctypes.Structure):
+            _fields_ = [("selector", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("element", ctypes.c_uint32)]
+
+        lib = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+        lib.AudioObjectGetPropertyDataSize.argtypes = [
+            ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        lib.AudioObjectGetPropertyData.argtypes = [
+            ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        _coreaudio = (ctypes, lib, Address)
+    return _coreaudio
+
+
+def audio_device_signature() -> Optional[tuple]:
+    """(Geräte-IDs, Standard-Eingang, Standard-Ausgang) laut CoreAudio; None außerhalb von macOS."""
+    if not IS_MAC:
+        return None
+    try:
+        ctypes, lib, Address = _coreaudio_lib()
+        fourcc = lambda code: int.from_bytes(code.encode("ascii"), "big")  # noqa: E731
+        system, glob = 1, fourcc("glob")  # kAudioObjectSystemObject, kAudioObjectPropertyScopeGlobal
+
+        def read(selector: str) -> list:
+            addr = Address(fourcc(selector), glob, 0)
+            size = ctypes.c_uint32(0)
+            if lib.AudioObjectGetPropertyDataSize(system, ctypes.byref(addr), 0, None, ctypes.byref(size)):
+                return []
+            buf = (ctypes.c_uint32 * (size.value // 4))()
+            if lib.AudioObjectGetPropertyData(system, ctypes.byref(addr), 0, None, ctypes.byref(size), buf):
+                return []
+            return list(buf)
+
+        return tuple(read("dev#")), tuple(read("dIn ")), tuple(read("dOut"))
+    except Exception:
+        return None
+
+
+def audio_devices_changed() -> bool:
+    """True, wenn sich Geräte oder Standardgeräte seit dem letzten Auffrischen geändert haben."""
+    global _device_signature
+    current = audio_device_signature()
+    if current is None:
+        return False
+    if _device_signature is None:
+        _device_signature = current
+        return False
+    return current != _device_signature
 
 
 @contextlib.contextmanager
