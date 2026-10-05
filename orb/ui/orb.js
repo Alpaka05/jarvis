@@ -9,7 +9,7 @@
  * Ruhezustand geht, blendet er sich aus.
  *
  * Zum Ausprobieren im Browser: index.html?preview (dunkler Hintergrund, Orb immer sichtbar) und
- * optional &port=8765.
+ * optional &port=8765&token=… (Inhalt von data/orb.token).
  */
 (() => {
   "use strict";
@@ -17,6 +17,7 @@
   const TAU = Math.PI * 2;
   const params = new URLSearchParams(location.search);
   const PORT = Number(window.ORB_PORT || params.get("port") || 8765);
+  const TOKEN = String(window.ORB_TOKEN || params.get("token") || "");
   const $ = (id) => document.getElementById(id);
   const stageEl = $("stage"), glCanvas = $("gl"), hud = $("hud"), hctx = hud.getContext("2d");
   const subsEl = $("subs"), subUser = $("subUser"), subJarvis = $("subJarvis");
@@ -446,7 +447,7 @@
 
   function connect() {
     let ws;
-    try { ws = new WebSocket(`ws://127.0.0.1:${PORT}`); } catch (e) { setTimeout(connect, 2000); return; }
+    try { ws = new WebSocket(`ws://127.0.0.1:${PORT}/?token=${encodeURIComponent(TOKEN)}`); } catch (e) { setTimeout(connect, 2000); return; }
     ws.onopen = () => { connected = true; fresh = true; updateVisibility(); };
     ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch (err) { /* kaputte Nachricht ignorieren */ } };
     ws.onclose = () => {

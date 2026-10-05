@@ -9,6 +9,9 @@ Orb-Fenster verbindet sich als Client und bekommt JSON-Nachrichten:
     {"type": "error", "message": "Nicht verstanden"}                    kurz aufblitzen, Zustand bleibt
     {"type": "transcript", "role": "user" | "assistant", "text": "…"}  für Untertitel
 
+Verbindungen brauchen das Token aus ORB_TOKEN bzw. data/orb.token (?token=…) – sonst könnte
+jede Webseite im Browser per ws://127.0.0.1 mitlesen, was gesagt und geantwortet wird.
+
 Beim Verbinden bekommt der Client sofort den aktuellen Zustand. „idle“ wird erst gesendet,
 wenn nicht innerhalb von IDLE_DELAY ein anderer Zustand folgt – so flackert der Orb nicht kurz
 in den Ruhezustand, wenn z.B. auf die Sprachausgabe direkt das Nachfrage-Fenster folgt.
@@ -19,20 +22,46 @@ Aufrufer blockieren nie, Fehler werden nie nach außen gereicht.
 from __future__ import annotations
 
 import atexit
+import hmac
 import json
 import math
 import os
 import queue
+import re
+import secrets
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
 IDLE_DELAY = 0.3
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+TOKEN_FILE = DATA_DIR / "orb.token"
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+
+
+def load_or_create_token(path: Optional[Path]) -> str:
+    """Token für den Orb-Server. Mit Datei bleibt es über Neustarts gleich, damit ein selbst
+    gestarteter Orb sich wieder verbinden kann; die Datei ist nur für den Nutzer lesbar."""
+    if path is None:
+        return secrets.token_urlsafe(24)
+    try:
+        token = path.read_text(encoding="ascii").strip()
+        if _TOKEN_RE.match(token):
+            return token
+    except (OSError, UnicodeDecodeError):
+        pass
+    token = secrets.token_urlsafe(24)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(token)
+    return token
 
 
 def normalize_rms(value: float, floor_db: float = -50.0, ceil_db: float = -10.0) -> float:
@@ -44,8 +73,10 @@ def normalize_rms(value: float, floor_db: float = -50.0, ceil_db: float = -10.0)
 
 
 class OrbEvents:
-    def __init__(self, level_hz: float = 30.0, idle_delay: float = IDLE_DELAY):
+    def __init__(self, level_hz: float = 30.0, idle_delay: float = IDLE_DELAY, token_file: Optional[Path] = None):
         self.level_interval = 1.0 / level_hz
+        self.token_file = token_file
+        self.token = ""
         self.idle_delay = idle_delay
         self.enabled = False
         self.address = ""
@@ -66,7 +97,8 @@ class OrbEvents:
         try:
             from websockets.sync.server import serve
 
-            self._server = serve(self._handle, host, port)
+            self.token = self.token or load_or_create_token(self.token_file)
+            self._server = serve(self._handle, host, port, process_request=self._check_token)
         except Exception as e:  # Paket fehlt, Port belegt, …
             return f"Orb-Server nicht gestartet: {e}"
         self.address = f"ws://{host}:{self._server.socket.getsockname()[1]}"
@@ -88,6 +120,13 @@ class OrbEvents:
     def active(self) -> bool:
         """True, wenn mindestens ein Orb-Fenster verbunden ist."""
         return self.enabled and bool(self._clients)
+
+    def _check_token(self, connection, request):
+        """Verbindungen ohne passendes Token abweisen (None = annehmen)."""
+        given = parse_qs(urlsplit(request.path).query).get("token", [""])[0]
+        if hmac.compare_digest(given.encode(), self.token.encode()):
+            return None
+        return connection.respond(403, "Falsches oder fehlendes Token.\n")
 
     def _handle(self, ws):
         with self._lock:
@@ -186,6 +225,8 @@ class OrbEvents:
 # ── Orb-Fenster (orb/, Tauri) als Kindprozess ────────────────────────────────
 
 ORB_TARGET_DIR = Path(__file__).resolve().parent.parent / "orb" / "src-tauri" / "target"
+ORB_LOG = DATA_DIR / "orb.log"
+STARTUP_CHECK_SECONDS = 0.8  # beendet sich das Fenster so schnell, ist der Start gescheitert
 
 
 def find_window_binary(target_dir: Optional[Path] = None) -> Optional[Path]:
@@ -202,8 +243,9 @@ def find_window_binary(target_dir: Optional[Path] = None) -> Optional[Path]:
 class OrbWindow:
     """Startet das Orb-Fenster auf Wunsch (Befehl 'orb') und schließt es mit Jarvis."""
 
-    def __init__(self, events: OrbEvents):
+    def __init__(self, events: OrbEvents, log_path: Path = ORB_LOG):
         self.events = events
+        self.log_path = log_path
         self._proc: Optional[subprocess.Popen] = None
         atexit.register(self.close)
 
@@ -220,20 +262,43 @@ class OrbWindow:
             return False, "Orb-Fenster noch nicht gebaut: cd orb/src-tauri && cargo build --release"
         if not self.events.enabled:
             error = self.events.start(port=port)
+            if error and port:  # Port belegt → freien nehmen, das Fenster bekommt ihn mitgeteilt
+                error = self.events.start(port=0)
             if error:
                 return False, error
         actual_port = self.events.address.rsplit(":", 1)[-1]
+        env = {**os.environ, "ORB_PORT": actual_port, "ORB_TOKEN": self.events.token, "JARVIS_ORB_CHILD": "1"}
+        # Eigene Prozessgruppe: Strg+C im Terminal (Frage/Sprachmodus abbrechen) trifft sonst auch den Orb
+        if sys.platform.startswith("win"):
+            detach: Dict[str, Any] = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        else:
+            detach = {"start_new_session": True}
         try:
-            self._proc = subprocess.Popen(
-                [str(binary)],
-                env={**os.environ, "ORB_PORT": actual_port},
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.log_path, "wb") as log:
+                # stdin bleibt offen und ist die Lebensader: endet Jarvis – auch per Absturz oder
+                # kill -9 –, sieht der Orb EOF und beendet sich selbst.
+                self._proc = subprocess.Popen(
+                    [str(binary)], env=env, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, **detach
+                )
         except OSError as e:
             return False, f"Orb-Fenster konnte nicht gestartet werden: {e}"
-        return True, "Orb gestartet."
+        try:
+            code = self._proc.wait(timeout=STARTUP_CHECK_SECONDS)
+        except subprocess.TimeoutExpired:
+            return True, "Orb gestartet."
+        self._proc = None
+        return False, f"Orb-Fenster hat sich sofort beendet (Code {code}). {self._log_tail()}".strip()
+
+    def _log_tail(self, lines: int = 3) -> str:
+        try:
+            text = self.log_path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        if not text:
+            return ""
+        tail = " | ".join(text.splitlines()[-lines:])
+        return f"Ausgabe: {tail[-300:]} (vollständig in {self.log_path})"
 
     def shut(self) -> Tuple[bool, str]:
         """Schließt das Fenster auf Wunsch. Gibt (Erfolg, Meldung) zurück."""
@@ -249,6 +314,15 @@ class OrbWindow:
         if proc is None or proc.poll() is not None:
             return
         try:
+            # Erst die Lebensader kappen: der Orb beendet sich selbst sauber (unter Windows
+            # bliebe nach terminate() sonst ein Geister-Symbol im Tray).
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait(timeout=2)
+            return
+        except Exception:
+            pass
+        try:
             proc.terminate()
             proc.wait(timeout=2)
         except Exception:
@@ -258,7 +332,7 @@ class OrbWindow:
                 pass
 
 
-bus = OrbEvents()
+bus = OrbEvents(token_file=TOKEN_FILE)
 window = OrbWindow(bus)
 
 start = bus.start

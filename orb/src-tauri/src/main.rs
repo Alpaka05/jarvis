@@ -3,11 +3,17 @@
 //! Das Fenster selbst ist nur die Hülle. Die Darstellung (../ui) verbindet sich per WebSocket
 //! mit Jarvis (ws://127.0.0.1:ORB_PORT) und zeichnet den Orb. Bedient wird die App über das
 //! Tray-Symbol: Orb aus-/einblenden, Ecke für den Ruhezustand wechseln, beenden.
+//!
+//! Von Jarvis gestartet (JARVIS_ORB_CHILD) kommen Port und Token als Umgebungsvariablen, und
+//! stdin ist die Lebensader: endet Jarvis, liefert stdin EOF und der Orb beendet sich. Selbst
+//! gestartet liest der Orb das Token aus data/orb.token im Jarvis-Ordner.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
+use std::io::Read;
+use std::path::PathBuf;
 use std::time::Duration;
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -16,12 +22,23 @@ fn main() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8765);
+    let token = read_token();
 
     tauri::Builder::default()
         .setup(move |app| {
             // Kein Dock-Symbol und kein App-Menü – die App lebt nur im Tray
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            if std::env::var_os("JARVIS_ORB_CHILD").is_some() {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let mut stdin = std::io::stdin();
+                    let mut buf = [0u8; 64];
+                    while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
+                    handle.exit(0);
+                });
+            }
 
             let window = WebviewWindowBuilder::new(app, "orb", WebviewUrl::App("index.html".into()))
                 .title("Jarvis Orb")
@@ -34,7 +51,7 @@ fn main() {
                 .focused(false)
                 .visible(false)
                 .visible_on_all_workspaces(true)
-                .initialization_script(&format!("window.ORB_PORT = {port};"))
+                .initialization_script(&format!("window.ORB_PORT = {port}; window.ORB_TOKEN = \"{token}\";"))
                 .build()?;
             cover_work_area(&window)?;
             window.set_ignore_cursor_events(true)?;
@@ -103,4 +120,18 @@ fn cover_work_area(window: &WebviewWindow) -> tauri::Result<()> {
         window.set_size(size)?;
     }
     Ok(())
+}
+
+/// Token für den Jarvis-Server: aus ORB_TOKEN oder aus data/orb.token neben dem Repo
+/// (Binary liegt unter orb/src-tauri/target/<profil>/). Nur [A-Za-z0-9_-], damit es gefahrlos
+/// ins Initialisierungsskript passt.
+fn read_token() -> String {
+    let raw = std::env::var("ORB_TOKEN").ok().or_else(|| {
+        let file: PathBuf = std::env::current_exe().ok()?.ancestors().nth(5)?.join("data").join("orb.token");
+        std::fs::read_to_string(file).ok()
+    });
+    raw.unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
 }

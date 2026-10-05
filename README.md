@@ -165,7 +165,9 @@ Klicks gehen hindurch. Der Orb erscheint erst mit dem Wake-Word, bleibt klein in
 (Untertitel daneben) und blendet sich nach dem Gespräch wieder aus. Bedient wird er über das
 Tray-Symbol (aus-/einblenden, Ecke wechseln, beenden).
 
-Bauen und starten (braucht [Rust](https://rustup.rs)):
+Bauen und starten (braucht [Rust](https://rustup.rs); unter Windows zusätzlich die
+„Visual Studio Build Tools“ mit C++ und die WebView2-Runtime – auf Windows ist der Orb bisher
+ungetestet):
 
 ```bash
 cd orb/src-tauri
@@ -173,12 +175,21 @@ cargo run              # Entwicklung
 cargo build --release  # fertige App unter target/release/jarvis-orb
 ```
 
+Änderungen an `orb/ui` werden in die App eingebaut – danach neu bauen. Liegt ein Release-Build
+vor, startet Jarvis immer diesen.
+
 Danach im Jarvis-Chat `orb` eintippen (`orb aus` schließt ihn) oder Jarvis einfach sagen
-„Schalte den Orb ein/aus“. Jarvis startet das Fenster und schließt es beim Beenden wieder. Wer den Orb lieber selbst startet, setzt `ORB_ENABLED=true`; der Orb verbindet sich
-dann von selbst (auch nach einem Neustart von Jarvis). Die Oberfläche lässt sich auch im
+„Schalte den Orb ein/aus“. Jarvis startet das Fenster und schließt es beim Beenden wieder –
+auch wenn Jarvis abstürzt, beendet sich das Fenster selbst. Startet es nicht, steht der Grund in
+`data/orb.log`. Wer den Orb lieber selbst startet, setzt `ORB_ENABLED=true`; der Orb verbindet
+sich dann von selbst (auch nach einem Neustart von Jarvis). Die Oberfläche lässt sich auch im
 Browser ansehen: `orb/ui/index.html?preview`.
 
-Für den Orb startet Jarvis einen WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal erreichbar) und sendet JSON-Ereignisse:
+Für den Orb startet Jarvis einen WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal
+erreichbar; ist der Port belegt, nimmt `orb` einen freien) und sendet JSON-Ereignisse. Weil
+darüber alles Gesagte mitläuft, braucht jede Verbindung das Token aus `data/orb.token`
+(`ws://127.0.0.1:8765/?token=…`, wird beim ersten Start angelegt, nur für dich lesbar) –
+sonst könnte jede Webseite im Browser mitlesen. Die Ereignisse:
 
 | Nachricht | Bedeutung |
 |---|---|
