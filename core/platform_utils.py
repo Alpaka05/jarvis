@@ -461,7 +461,8 @@ def speak_system_process(text: str, voice: Optional[str] = None) -> Optional[sub
     voice = voice if voice is not None else default_voice()
     try:
         if IS_MAC:
-            cmd = ["say"] + (["-v", voice] if voice else []) + [text]
+            # "--": Text, der mit "-" beginnt (z.B. Aufzählungen), sonst als Option gelesen
+            cmd = ["say"] + (["-v", voice] if voice else []) + ["--", text]
             return subprocess.Popen(cmd)
 
         if IS_WINDOWS:
@@ -488,7 +489,7 @@ def speak_system_process(text: str, voice: Optional[str] = None) -> Optional[sub
             )
             for exe, args in candidates:
                 if shutil.which(exe):
-                    return subprocess.Popen([exe, *args, text])
+                    return subprocess.Popen([exe, *args, "--", text])
     except Exception:
         return None
     return None
@@ -514,10 +515,20 @@ def notify(title: str, message: str) -> bool:
     """Zeigt eine Desktop-Benachrichtigung. Gibt True bei Erfolg zurück."""
     try:
         if IS_MAC:
-            safe_title = title.replace('"', "'")
-            safe_msg = message.replace('"', "'")
-            script = f'display notification "{safe_msg}" with title "{safe_title}"'
-            subprocess.run(["osascript", "-e", script], check=False, timeout=10)
+            # Titel und Text als argv übergeben, nie in den Skripttext einsetzen: sonst kann
+            # LLM-gesteuerter Text (z.B. mit "\" am Ende) aus dem String ausbrechen und AppleScript
+            # bzw. per "do shell script" beliebige Befehle ausführen.
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e", "on run argv",
+                    "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+                    "-e", "end run",
+                    "--", title, message,
+                ],
+                check=False,
+                timeout=10,
+            )
             return True
 
         if IS_WINDOWS:
