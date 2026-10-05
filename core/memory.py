@@ -120,7 +120,12 @@ class MemoryStore:
         return [d for _, _, d in scored[:limit]]
 
     def facts_for_prompt(self, limit: int = 50) -> str:
-        facts = self.list_facts(limit)
+        # Bei mehr Fakten als Platz die zuletzt gespeicherten/geänderten nehmen – sonst fielen
+        # neue Fakten und Korrekturen still heraus. Ausgabe nach id, damit der Prompt stabil bleibt.
+        rows = self._conn.execute(
+            "SELECT * FROM facts ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        facts = sorted((dict(r) for r in rows), key=lambda f: f["id"])
         if not facts:
             return ""
         return "\n".join(f"- [#{f['id']}|{f['category']}] {f['content']}" for f in facts)

@@ -72,3 +72,24 @@ def test_agent_injects_facts_and_logs_conversation(tmp_path):
     roles = {r["role"] for r in logged}
     assert roles == {"user"} or roles == {"user", "assistant"}
     assert any(r["content"] == "Gemerkt, Colin." for r in store.search_conversations("Gemerkt"))
+
+
+def test_facts_for_prompt_prefers_recent_facts(tmp_path):
+    store = MemoryStore(tmp_path / "m.db")
+    old = store.add_fact("Alter Fakt eins.")
+    store.add_fact("Alter Fakt zwei.")
+    store.add_fact("Neuer Fakt drei.")
+    # Uhrzeiten festlegen, damit die Reihenfolge nicht an der Sekunde hängt
+    store._conn.execute("UPDATE facts SET updated_at = '2026-01-01T00:00:00'")
+    store._conn.execute("UPDATE facts SET updated_at = '2026-02-01T00:00:00' WHERE content LIKE 'Neuer%'")
+    store._conn.commit()
+
+    prompt = store.facts_for_prompt(limit=2)
+    assert "Neuer Fakt drei." in prompt
+    assert prompt.count("\n") == 1
+
+    store.update_fact(old["id"], "Korrigierter Fakt eins.")
+    prompt = store.facts_for_prompt(limit=2)
+    assert "Korrigierter Fakt eins." in prompt
+    # Ausgabe in id-Reihenfolge (stabiler Prompt)
+    assert prompt.index("Korrigierter") < prompt.index("Neuer")
