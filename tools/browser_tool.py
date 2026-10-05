@@ -10,7 +10,7 @@ import urllib.parse
 
 from config import config
 from core import platform_utils
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, Risk, ToolResult
 
 
 class BrowserTool(BaseTool):
@@ -34,6 +34,18 @@ class BrowserTool(BaseTool):
         },
         "required": ["action"],
     }
+
+    # ── Rückfragen ───────────────────────────────────────────────────────────
+
+    def policy(self, action: str = "open_url", **kwargs) -> Policy:
+        if action == "open_url":
+            url = (kwargs.get("url") or "").strip()
+            return Policy(Risk.GUARDED, f"Im Browser öffnen: {url}", url=url)
+        if action == "agent":
+            # Handelt selbstständig im Browser (Formulare, Bestellungen) – immer erst fragen
+            task = (kwargs.get("task") or kwargs.get("query") or "").strip()
+            return Policy(Risk.CONFIRM, f"Browser-Agent eine Aufgabe selbstständig erledigen lassen\nAufgabe: {task}")
+        return Policy()
 
     # ── einfache Aktionen ────────────────────────────────────────────────────
 
