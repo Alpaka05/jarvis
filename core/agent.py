@@ -140,7 +140,8 @@ class JarvisAgent:
                 "(z.B. ANTHROPIC_API_KEY) oder Ollama starten.\n" + "\n".join(self.notes)
             )
 
-        self.history.append({"role": "user", "content": query})
+        turn_start = {"role": "user", "content": query}
+        self.history.append(turn_start)
         self._log("user", query)
         schemas = self.tool_schemas()
         # System-Prompt einmal pro Anfrage fixieren: stabil für Prompt-Caching und damit
@@ -183,11 +184,16 @@ class JarvisAgent:
             return answer
 
         except LLMError as e:
-            self._rollback_turn()
+            self._rollback_turn(turn_start)
             return f"Der KI-Dienst ist gerade nicht erreichbar: {e}"
         except KeyboardInterrupt:
-            self._rollback_turn()
+            self._rollback_turn(turn_start)
             raise
+        except Exception as e:
+            # Sonst bliebe ein Tool-Aufruf ohne Ergebnis im Verlauf und jede weitere Anfrage
+            # würde vom Provider abgelehnt, bis man 'reset' tippt.
+            self._rollback_turn(turn_start)
+            return f"Bei der Bearbeitung ist ein interner Fehler aufgetreten: {e}"
 
     # ── Intern ───────────────────────────────────────────────────────────────
 
@@ -253,15 +259,19 @@ class JarvisAgent:
             result = ToolResult.fail(f"Unbekanntes Tool '{call.name}'. Verfügbar: {', '.join(self.tools)}")
         else:
             args = call.arguments if isinstance(call.arguments, dict) else {}
-            prompt = None
+            # Im Zweifel nicht ausführen: Kann die Nachfrage nicht gebaut oder gestellt werden,
+            # wird die Aktion abgelehnt statt stillschweigend ausgeführt.
             try:
                 prompt = tool.confirmation_prompt(**args)
-            except Exception:
-                pass
-            if prompt and self.confirm is not None and not self.confirm(prompt):
-                result = ToolResult.ok("Der Nutzer hat diese Aktion abgelehnt. Nicht ausgeführt.")
+            except Exception as e:
+                result = ToolResult.fail(f"Nachfrage für '{call.name}' nicht möglich ({e}). Nicht ausgeführt.")
             else:
-                result = self._execute_with_timeout(tool, call, args)
+                if prompt and self.confirm is None:
+                    result = ToolResult.fail("Diese Aktion braucht eine Bestätigung, die hier nicht möglich ist. Nicht ausgeführt.")
+                elif prompt and not self.confirm(prompt):
+                    result = ToolResult.ok("Der Nutzer hat diese Aktion abgelehnt. Nicht ausgeführt.")
+                else:
+                    result = self._execute_with_timeout(tool, call, args)
 
         if self.on_tool_result:
             self.on_tool_result(call, result)
@@ -293,12 +303,12 @@ class JarvisAgent:
             )
         return box.get("result") or ToolResult.fail(f"Tool '{call.name}' lieferte kein Ergebnis.")
 
-    def _rollback_turn(self):
-        """Entfernt die unvollständige letzte Runde (bis inkl. der letzten Nutzernachricht)."""
-        while self.history:
-            msg = self.history.pop()
-            if msg["role"] == "user" and not isinstance(msg.get("content"), list):
-                break
+    def _rollback_turn(self, turn_start: Dict[str, Any]):
+        """Entfernt die unvollständige Runde ab ihrer Nutzernachricht (inklusive)."""
+        for i in range(len(self.history) - 1, -1, -1):
+            if self.history[i] is turn_start:
+                del self.history[i:]
+                return
 
     def _trim_history(self):
         if len(self.history) <= self.MAX_HISTORY:

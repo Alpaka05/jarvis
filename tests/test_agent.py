@@ -166,3 +166,65 @@ def test_no_provider_gives_setup_hint():
     agent = JarvisAgent(provider=None, fallback=None, tools=[])
     agent.provider = None
     assert "API-Key" in agent.process_query("hallo")
+
+
+class BrokenPromptTool(DangerousTool):
+    name = "broken"
+
+    def confirmation_prompt(self, **kwargs):
+        raise ValueError("kaputt")
+
+
+def test_confirmation_prompt_error_blocks_execution():
+    broken = BrokenPromptTool()
+    provider = FakeProvider(
+        [
+            LLMResponse(text="", tool_calls=[ToolCall(id="c1", name="broken", arguments={})]),
+            LLMResponse(text="ok"),
+        ]
+    )
+    agent = JarvisAgent(provider=provider, tools=[broken], confirm=lambda prompt: True)
+    agent.process_query("los")
+    assert broken.executed is False
+
+
+def test_confirmation_needed_without_confirm_callback_blocks_execution():
+    danger = DangerousTool()
+    provider = FakeProvider(
+        [
+            LLMResponse(text="", tool_calls=[ToolCall(id="c1", name="danger", arguments={})]),
+            LLMResponse(text="ok"),
+        ]
+    )
+    agent = JarvisAgent(provider=provider, tools=[danger])
+    agent.process_query("los")
+    assert danger.executed is False
+
+
+def test_unexpected_error_rolls_back_whole_turn():
+    def boom(call, result):
+        raise RuntimeError("Anzeige kaputt")
+
+    provider = FakeProvider(
+        [
+            LLMResponse(text="erste Antwort"),
+            LLMResponse(text="", tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]),
+        ]
+    )
+    agent = JarvisAgent(provider=provider, tools=[EchoTool()])
+    agent.process_query("eins")
+    before = list(agent.history)
+    agent.on_tool_result = boom
+    answer = agent.process_query("zwei")
+    assert "interner Fehler" in answer
+    assert agent.history == before
+
+
+def test_failed_summary_call_rolls_back_to_user_question():
+    responses = [
+        LLMResponse(text="", tool_calls=[ToolCall(id=f"c{i}", name="echo", arguments={"text": str(i)})])
+        for i in range(JarvisAgent.MAX_STEPS)
+    ]  # danach keine Antwort mehr -> Zusammenfassung scheitert mit LLMError
+    agent = JarvisAgent(provider=FakeProvider(responses), tools=[EchoTool()])
+    assert "nicht erreichbar" in agent.process_query("loop")
+    assert agent.history == []

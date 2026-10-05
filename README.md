@@ -31,6 +31,7 @@ core/voice.py           Sprachausgabe: satzweise Edge-TTS-Pipeline, Wiedergabe i
 core/voice_input.py     Spracheingabe (Silero-VAD → Google Speech Recognition)
 core/wakeword.py        Wake-Word „Hey Jarvis“ (openWakeWord, lokal)
 core/voice_loop.py      Sprachmodus: lauschen, bestätigen, aufnehmen, antworten, Nachfrage-Fenster
+core/orb.py             Ereignisse für das Orb-Overlay (Zustand, Pegel, Tools) per WebSocket auf 127.0.0.1
 tools/                  Tools mit JSON-Schema – das LLM wählt Tool und Argumente selbst
   memory, system, calendar, homeassistant, spotify, mail, web_search (search/news/read_url), browser, obsidian
 tests/                  pytest (Agent-Loop, Provider-Konvertierung, Tools)
@@ -64,6 +65,10 @@ cp .env.example .env          # Windows: copy .env.example .env
 
 Ohne uv: `python -m venv .venv`, aktivieren, `pip install -r requirements.txt`.
 
+**macOS mit Apple Silicon:** `brew install flac`. Die Spracherkennung braucht einen
+FLAC-Konverter; der in `speech_recognition` mitgelieferte läuft nur auf Intel-Macs
+(Fehler „Bad CPU type in executable“).
+
 Optionales Extra für autonome Browser-Aufgaben (browser-use):
 
 ```bash
@@ -91,6 +96,7 @@ uv run playwright install chromium
 | `TTS_ENGINE`, `EDGE_VOICE`, `EDGE_RATE`, `EDGE_PITCH` | Sprachausgabe: `edge` (neuronal, online) oder `system` (offline) |
 | `VOICE_MODE_ON_START`, `WAKE_WORD_THRESHOLD`, `FOLLOW_UP_SECONDS`, `ACK_STYLE`, `ACK_PHRASE` | Sprachmodus: Autostart, Empfindlichkeit, Nachfrage-Fenster, Bestätigung (Chime und/oder gesprochenes „Ja?“) |
 | `TTS_ENABLED`, `VOICE_NAME`, `LANGUAGE` | Sprachausgabe an/aus, Systemstimme, Sprache |
+| `ORB_ENABLED`, `ORB_PORT` | Ereignis-Server für das Orb-Overlay schon beim Start (sonst erst mit `orb`), Port Standard 8765 |
 
 ### Spotify
 
@@ -147,6 +153,55 @@ Ablauf: „Hey Jarvis“ → Bestätigungston → Frage stellen → Antwort wird
 Sekunden Nachfrage-Fenster ohne Wake-Word → zurück zum Lauschen. Reinreden unterbricht die Ausgabe.
 Empfindlichkeit über `WAKE_WORD_THRESHOLD` (0.3 = empfindlicher, 0.7 = strenger).
 
+„Danke“, „Das war's“ o.Ä. beendet das Nachfrage-Fenster sofort. „Wechsel in den Chatmodus“
+(oder „Sprachmodus beenden“, „Ich will lieber tippen“) verlässt den Sprachmodus, danach kann
+man direkt tippen; `wake` startet ihn wieder.
+
+### Orb-Overlay
+
+Ein schwebender, animierter Orb als eigenes Fenster (Tauri + Three.js, in `orb/`) zeigt, ob
+Jarvis lauscht, nachdenkt oder spricht. Das Fenster liegt durchsichtig über dem Bildschirm,
+Klicks gehen hindurch. Der Orb erscheint erst mit dem Wake-Word, bleibt klein in einer Ecke
+(Untertitel daneben) und blendet sich nach dem Gespräch wieder aus. Bedient wird er über das
+Tray-Symbol (aus-/einblenden, Ecke wechseln, beenden).
+
+Bauen und starten (braucht [Rust](https://rustup.rs); unter Windows zusätzlich die
+„Visual Studio Build Tools“ mit C++ und die WebView2-Runtime – auf Windows ist der Orb bisher
+ungetestet):
+
+```bash
+cd orb/src-tauri
+cargo run              # Entwicklung
+cargo build --release  # fertige App unter target/release/jarvis-orb
+```
+
+Änderungen an `orb/ui` werden in die App eingebaut – danach neu bauen. Liegt ein Release-Build
+vor, startet Jarvis immer diesen.
+
+Danach im Jarvis-Chat `orb` eintippen (`orb aus` schließt ihn) oder Jarvis einfach sagen
+„Schalte den Orb ein/aus“. Jarvis startet das Fenster und schließt es beim Beenden wieder –
+auch wenn Jarvis abstürzt, beendet sich das Fenster selbst. Startet es nicht, steht der Grund in
+`data/orb.log`. Wer den Orb lieber selbst startet, setzt `ORB_ENABLED=true`; der Orb verbindet
+sich dann von selbst (auch nach einem Neustart von Jarvis). Die Oberfläche lässt sich auch im
+Browser ansehen: `orb/ui/index.html?preview`.
+
+Für den Orb startet Jarvis einen WebSocket-Server auf `ws://127.0.0.1:8765` (nur lokal
+erreichbar; ist der Port belegt, nimmt `orb` einen freien) und sendet JSON-Ereignisse. Weil
+darüber alles Gesagte mitläuft, braucht jede Verbindung das Token aus `data/orb.token`
+(`ws://127.0.0.1:8765/?token=…`, wird beim ersten Start angelegt, nur für dich lesbar) –
+sonst könnte jede Webseite im Browser mitlesen. Die Ereignisse:
+
+| Nachricht | Bedeutung |
+|---|---|
+| `{"type": "state", "state": "idle"}` | Zustand: `idle`, `wake`, `listening`, `thinking`, `speaking` |
+| `{"type": "level", "source": "mic", "value": 0.42}` | Lautstärke 0–1 von Mikrofon (`mic`) oder Sprachausgabe (`tts`), ~30/s |
+| `{"type": "tool", "name": "spotify"}` | ein Tool wird aufgerufen |
+| `{"type": "error", "message": "Nicht verstanden"}` | kurzer Fehlerhinweis |
+| `{"type": "transcript", "role": "user", "text": "…"}` | Text für Untertitel (`user` / `assistant`) |
+
+Ein neu verbundenes Fenster bekommt sofort den aktuellen Zustand. Ohne verbundenes Fenster
+läuft Jarvis unverändert weiter.
+
 ## Tests
 
 ```bash
@@ -161,6 +216,7 @@ uv run pytest
 - [x] Langzeitgedächtnis (Fakten über den Nutzer + durchsuchbares Gesprächsprotokoll, SQLite)
 - [x] Wake-Word („Hey Jarvis“) mit openWakeWord, Sprachmodus mit Nachfrage-Fenster
 - [ ] Lokale Spracherkennung (faster-whisper) statt Google
+- [x] Orb-Overlay (Tauri) mit Zuständen, Pegel, Tool-Hinweis und Untertiteln
 - [x] Obsidian-Vault: Notizen durchsuchen, lesen, anlegen, ergänzen
 - [ ] Weitere Tools: Dateisystem, Timer/Erinnerungen, Notion, Wetter-API
 - [ ] Kalender-Backends (CalDAV, Google Calendar)

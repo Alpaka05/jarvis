@@ -44,7 +44,6 @@ venv.bak/
 
 # uv / virtualenv
 .venv/
-uv.lock
 
 # Jarvis runtime data
 data/.spotify_cache
@@ -62,3 +61,9 @@ launch/last_start.log
 data/*.db
 data/*.db-journal
 data/ack_*.mp3
+data/orb.token
+data/orb.log
+
+# Orb (Tauri): Build-Ausgabe und generierte Schemas
+orb/src-tauri/target/
+orb/src-tauri/gen/

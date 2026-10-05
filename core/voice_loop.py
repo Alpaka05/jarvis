@@ -7,6 +7,7 @@ Ablauf:
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable, Optional
 
@@ -16,7 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from config import config
-from core import platform_utils
+from core import orb, platform_utils
 from core.agent import JarvisAgent
 from core.voice import VoiceEngine
 from core.voice_input import VoiceInputListener, rms
@@ -158,34 +159,55 @@ class VoiceLoop:
             )
         )
         setattr(self.agent, "voice_mode", True)
+        orb.state("idle")
         try:
-            with platform_utils.open_audio_stream(
-                lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
-            ) as stream:
-                self.detector.reset()
-                while self.running:
-                    frame, _ = stream.read(FRAME_SAMPLES)
-                    if self.detector.triggered(frame):
-                        self._interaction(stream)
-                        self.detector.reset()
+            while self.running:
+                # Bei geänderten Audiogeräten Mikrofon schließen und neu öffnen – dabei liest
+                # PortAudio die Geräteliste frisch ein (siehe platform_utils.audio_devices_changed)
+                with platform_utils.open_audio_stream(
+                    lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+                ) as stream:
+                    self._listen(stream)
         except KeyboardInterrupt:
             pass
         finally:
             self.running = False
             self.voice.stop()
             setattr(self.agent, "voice_mode", False)
+            orb.state("idle")
 
     def stop(self):
         self.running = False
+
+    DEVICE_CHECK_FRAMES = 25  # ~2 s bei 80 ms pro Frame
+
+    def _listen(self, stream):
+        """Lauscht auf das Wake-Word, bis der Modus endet oder sich die Audiogeräte ändern."""
+        self.detector.reset()
+        frames = 0
+        while self.running:
+            frame, _ = stream.read(FRAME_SAMPLES)
+            if self.detector.triggered(frame):
+                self._interaction(stream)
+                orb.state("idle")
+                self.detector.reset()
+                frames = self.DEVICE_CHECK_FRAMES  # nach dem Gespräch gleich prüfen
+            frames += 1
+            if frames >= self.DEVICE_CHECK_FRAMES:
+                frames = 0
+                if platform_utils.audio_devices_changed():
+                    return
 
     # ── Eine Interaktion (mit Nachfrage-Fenster) ─────────────────────────────
 
     def _interaction(self, stream):
         if self.on_wake:
             self.on_wake()
+        orb.state("wake")
         self._acknowledge()
         # Eigene Bestätigung nicht als Sprache aufnehmen
         stream.read(int(SAMPLE_RATE * 0.15))
+        orb.state("listening")
         self.console.print("[bold yellow]🎤 Ich höre ...[/bold yellow]")
         start_timeout = 6.0
 
@@ -195,14 +217,21 @@ class VoiceLoop:
                 self.console.print("[dim]Nichts gehört, lausche weiter.[/dim]")
                 return
             play_chime("done")
+            orb.state("thinking")
             text = self.listener.recognize(recording)
             if not text:
                 self.console.print("[dim]Nicht verstanden.[/dim]")
+                orb.error("Nicht verstanden")
                 play_chime("fail")
                 return
             self.console.print(f"[bold cyan]Du:[/bold cyan] {text}")
-            if self._is_stop_phrase(text):
-                self.console.print("[dim]Okay, lausche weiter.[/dim]")
+            orb.transcript("user", text)
+            if self._is_text_mode_request(text):  # „Wechsel in den Chatmodus“ → Sprachmodus verlassen
+                self.console.print("[dim]Okay, zurück in den Chatmodus.[/dim]")
+                self.running = False
+                return
+            if self._is_stop_phrase(text):  # „Danke“, „Das war's“ … → Gespräch sofort beenden
+                self.console.print("[dim]Okay, bis später. Lausche wieder auf „Hey Jarvis“.[/dim]")
                 return
 
             with self.console.status("[bold green]Denke nach...[/bold green]", spinner="dots"):
@@ -210,12 +239,15 @@ class VoiceLoop:
             self.console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
             if getattr(self.agent, "last_usage", None) and self.agent.last_usage.calls:
                 self.console.print(f"  [dim]{self.agent.usage_summary(self.agent.last_usage)}[/dim]")
+            orb.transcript("assistant", response)
 
             interrupted = self._speak_with_barge_in(stream, response)
             if interrupted == "wake":
                 # „Hey Jarvis“ mitten in der Antwort: wie ein neuer Aufruf behandeln
+                orb.state("wake")
                 play_chime("wake")
                 stream.read(int(SAMPLE_RATE * 0.15))
+                orb.state("listening")
                 self.console.print("[bold yellow]🎤 Ich höre ...[/bold yellow]")
                 start_timeout = 6.0
                 continue
@@ -223,18 +255,63 @@ class VoiceLoop:
             start_timeout = 1.5 if interrupted else self.follow_up_seconds
             if start_timeout <= 0:
                 return
+            orb.state("listening")
             self.console.print("[dim]… noch etwas? (ohne Wake-Word)[/dim]")
 
     STOP_PHRASES = {
         "stopp", "stop", "stopp stopp", "halt", "danke", "danke das reicht", "das reicht", "reicht",
         "okay danke", "ok danke", "danke jarvis", "jarvis stopp", "jarvis stop", "abbrechen", "sei ruhig",
         "ruhe", "schon gut", "passt", "alles gut", "nichts", "nein danke", "vergiss es",
+        "das wäre alles", "das war alles", "das ist alles", "wäre alles", "war alles",
+    }
+
+    # „Danke, das war's“ & Co.: Ein Satz beendet das Gespräch, wenn er nur aus diesen Wörtern
+    # besteht und mindestens ein klares Abschluss-Signal enthält. Sobald etwas Inhaltliches dabei
+    # ist („Nein, mach das Licht aus“), geht er normal an den Agenten.
+    CLOSING_SIGNALS = {
+        "danke", "dankeschön", "dankesehr", "dank", "thanks", "wars", "reicht", "passt", "tschüss",
+        "tschau", "ciao", "bye", "stopp", "stop", "halt", "fertig", "nein", "nö", "nee", "ne", "nichts",
+        "abbrechen", "erledigt",
+    }
+    CLOSING_FILLER = {
+        "jarvis", "das", "war", "es", "wäre", "alles", "schon", "gut", "sehr", "schön", "vielen", "lieben",
+        "herzlichen", "dir", "ok", "okay", "alles", "klar", "super", "perfekt", "top", "prima", "toll",
+        "cool", "genau", "dann", "bis", "später", "erstmal", "erst", "mal", "mehr", "sonst", "weiter",
+        "ja", "danke", "nochmal", "auch", "so", "und", "ich", "brauche", "brauch", "wir", "sind",
     }
 
     @classmethod
     def _is_stop_phrase(cls, text: str) -> bool:
         norm = "".join(ch for ch in text.lower() if ch.isalpha() or ch == " ").strip()
-        return norm in cls.STOP_PHRASES
+        if norm in cls.STOP_PHRASES:
+            return True
+        words = norm.split()
+        return (
+            bool(words)
+            and len(words) <= 8
+            and any(w in cls.CLOSING_SIGNALS for w in words)
+            and all(w in cls.CLOSING_SIGNALS or w in cls.CLOSING_FILLER for w in words)
+        )
+
+    # Zurück in die Texteingabe: Modus-Wörter (auch „Chat Modus“/„Chat-Modus“) oder klare Wendungen.
+    # Bewusst eng gefasst, damit z.B. „Schreib eine Mail an Max“ eine normale Anfrage bleibt.
+    TEXT_MODE_WORDS = ("chatmodus", "textmodus", "tippmodus", "schreibmodus", "texteingabe", "chateingabe")
+    TEXT_MODE_PATTERN = re.compile(
+        r"\b(?:"
+        r"(?:zurück|wechsel\w*|geh\w*|schalt\w*) (?:zum|in den|zu dem|auf den) chat"
+        r"|ich (?:will|möchte|würde|mag) (?:(?:lieber|jetzt|wieder|gerne?|selbst|selber) )*(?:tippen|schreiben)"
+        r"|lass mich (?:(?:lieber|jetzt|wieder|selbst|selber) )*(?:tippen|schreiben)"
+        r"|sprachmodus (?:beenden|verlassen|stoppen|aus|ausschalten)"
+        r"|(?:beende|verlass|stopp|stoppe) (?:den )?sprachmodus"
+        r")\b"
+    )
+
+    @classmethod
+    def _is_text_mode_request(cls, text: str) -> bool:
+        norm = " ".join("".join(ch for ch in text.lower() if ch.isalpha() or ch == " ").split())
+        if any(w in norm.replace(" ", "") for w in cls.TEXT_MODE_WORDS):
+            return True
+        return bool(cls.TEXT_MODE_PATTERN.search(norm))
 
     def _speak_with_barge_in(self, stream, text: str) -> Optional[str]:
         """Spricht die Antwort. Abbruch durch „Hey Jarvis“ (Rückgabe 'wake') oder durch

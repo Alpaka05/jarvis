@@ -2,11 +2,12 @@ import json
 import sys
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, InvalidResponse, Prompt
 
 from config import config
-from core import platform_utils
+from core import orb, platform_utils
 from core.agent import JarvisAgent
 from core.llm import ToolCall
 from core.voice import VoiceEngine
@@ -20,10 +21,10 @@ if sys.platform.startswith("win"):
         except Exception:
             pass
 
-# PortAudio (PaMacCore) schreibt bei veralteter Geräteliste Warnungen direkt auf fd 2 –
-# dauerhaft stumm schalten, Pythons eigene Fehlerausgabe bleibt sichtbar.
+# PortAudio (PaMacCore) schreibt bei veralteter Geräteliste Warnungen direkt auf fd 1/2 –
+# dauerhaft stumm schalten, Pythons eigene Ausgaben bleiben sichtbar.
 if sys.platform == "darwin":
-    platform_utils.silence_native_stderr()
+    platform_utils.silence_native_output()
 
 console = Console()
 
@@ -58,6 +59,7 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
     if spotify_backend == "web" and not spotify_tool.is_linked():
         spotify_label = "Web API, [yellow]noch nicht verknüpft – tippe 'spotify login'[/yellow]"
 
+    orb_off = "aus [dim](tippe 'orb')[/dim]"
     rows = [
         f"🤖 [bold yellow]LLM:[/bold yellow] {llm_line}",
         f"📅 [bold yellow]Kalender:[/bold yellow] [green]lokal[/green]",
@@ -68,6 +70,7 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
         f"🧠 [bold yellow]Gedächtnis:[/bold yellow] [green]{agent.memory.count_facts() if agent.memory else 0} Fakten[/green] [dim]({config.MEMORY_DB.name}, tippe 'memory')[/dim]",
         f"🔊 [bold yellow]Sprachausgabe:[/bold yellow] {_yes_no(voice.enabled, voice.label, 'deaktiviert')}",
         f"🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
+        f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, orb_off)}",
     ]
     for note in agent.notes:
         rows.append(f"⚠️  [yellow]{note}[/yellow]")
@@ -89,6 +92,8 @@ def show_help():
 [bold yellow]Befehle:[/bold yellow]
 - [cyan]wake[/cyan]         Sprachmodus: dauerhaft lauschen, "Hey Jarvis" sagen, fragen (Strg+C beendet)
 - [cyan]v[/cyan] / [cyan]voice[/cyan]   einmalige Spracheingabe über das Mikrofon
+- [cyan]orb[/cyan] / [cyan]orb aus[/cyan]  schwebenden Orb starten / schließen (geht auch per Sprache:
+                 "Schalte den Orb ein"; schließt sich mit Jarvis)
 - [cyan]reset[/cyan]        Gesprächsverlauf löschen
 - [cyan]spotify login[/cyan]  Spotify einmalig mit deinem Konto verknüpfen
 - [cyan]kosten[/cyan]       Token-Verbrauch und geschätzte Kosten dieser Sitzung
@@ -141,7 +146,7 @@ def confirm_action(prompt: str) -> bool:
     for live in reversed(lives):
         live.stop()
     try:
-        console.print(Panel(prompt, title="[bold yellow]Bestätigung nötig[/bold yellow]", border_style="yellow"))
+        console.print(Panel(escape(prompt), title="[bold yellow]Bestätigung nötig[/bold yellow]", border_style="yellow"))
         return _JaNein.ask("Ausführen?", default=False, console=console)
     except (EOFError, KeyboardInterrupt):
         console.print("[dim]Keine Eingabe – Aktion nicht ausgeführt.[/dim]")
@@ -155,7 +160,8 @@ def on_tool_call(call: ToolCall):
     args = json.dumps(call.arguments, ensure_ascii=False)
     if len(args) > 120:
         args = args[:117] + "..."
-    console.print(f"  [dim]⚙ {call.name} {args}[/dim]")
+    console.print(f"  [dim]⚙ {escape(call.name)} {escape(args)}[/dim]")
+    orb.tool(call.name)
 
 
 def on_tool_result(call: ToolCall, result: ToolResult):
@@ -163,7 +169,7 @@ def on_tool_result(call: ToolCall, result: ToolResult):
     first_line = result.output.strip().splitlines()[0] if result.output.strip() else ""
     if len(first_line) > 100:
         first_line = first_line[:97] + "..."
-    console.print(f"  [dim]{icon} {first_line}[/dim]")
+    console.print(f"  [dim]{icon} {escape(first_line)}[/dim]")
 
 
 def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
@@ -180,7 +186,7 @@ def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
                 barge_in_threshold=config.BARGE_IN_THRESHOLD,
             )
     except Exception as e:
-        console.print(f"[bold red]Sprachmodus nicht verfügbar:[/bold red] {e}")
+        console.print(f"[bold red]Sprachmodus nicht verfügbar:[/bold red] {escape(str(e))}")
         console.print("[dim]Mikrofon angeschlossen? Pakete installiert (uv sync)?[/dim]")
         return False
     loop.run()
@@ -197,6 +203,10 @@ def main():
         on_notice=lambda m: console.print(f"[yellow]⚠ {m}[/yellow]"),
     )
     voice = VoiceEngine()
+    if config.ORB_ENABLED:
+        orb_error = orb.start(port=config.ORB_PORT)
+        if orb_error:
+            agent.notes.append(orb_error)
     voice_listener = None  # wird bei Bedarf geladen (Mikrofon-Bibliotheken)
 
     print_status(agent, voice)
@@ -235,8 +245,12 @@ def main():
                 continue
             if cmd in ("memory", "gedächtnis", "erinnerungen"):
                 facts = agent.memory.list_facts() if agent.memory else []
-                body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{f['category']}[/cyan]  {f['content']}" for f in facts) or "[dim]Noch leer.[/dim]"
+                body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{escape(f['category'])}[/cyan]  {escape(f['content'])}" for f in facts) or "[dim]Noch leer.[/dim]"
                 console.print(Panel(body, title="[bold magenta]Gedächtnis[/bold magenta]", border_style="magenta"))
+                continue
+            if cmd in ("orb", "orb an", "orb aus"):
+                ok, message = orb.close_window() if cmd == "orb aus" else orb.open_window(port=config.ORB_PORT)
+                console.print(f"[{'green' if ok else 'red'}]{message}[/]")
                 continue
             if cmd in ("wake", "sprachmodus", "hey", "zuhören", "listen"):
                 voice.stop()
@@ -252,31 +266,41 @@ def main():
                         vad_threshold=config.VAD_THRESHOLD,
                         silence_limit=config.SILENCE_LIMIT_SECONDS,
                     )
+                orb.state("listening")
                 user_input = voice_listener.record_and_recognize()
                 if not user_input:
+                    orb.state("idle")
                     continue
 
             voice.stop()  # laufende Ausgabe abbrechen, wenn eine neue Anfrage kommt
+            orb.transcript("user", user_input)
+            orb.state("thinking")
             try:
                 with console.status("[bold green]Denke nach... [dim](Strg+C bricht diese Frage ab)[/dim][/bold green]", spinner="dots"):
                     response = agent.process_query(user_input)
             except KeyboardInterrupt:
+                orb.state("idle")
                 console.print("[yellow]Frage abgebrochen.[/yellow]")
                 continue
 
-            console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
+            console.print(Panel(escape(response), title="[bold green]Jarvis[/bold green]", border_style="green"))
             if agent.last_usage.calls:
                 console.print(f"  [dim]{agent.usage_summary(agent.last_usage)}[/dim]")
+            orb.transcript("assistant", response)
             voice.speak(response)
-            if voice.enabled:
+            if voice.is_speaking():
                 console.print("[dim]Enter stoppt die Sprachausgabe.[/dim]")
+            else:
+                orb.state("idle")
 
         except KeyboardInterrupt:
             voice.stop()
             console.print("\n[bold yellow]Abgebrochen. Bis später![/bold yellow]")
             sys.exit(0)
         except Exception as e:
-            console.print(f"[bold red]Fehler:[/bold red] {e}")
+            orb.error(str(e))
+            orb.state("idle")
+            console.print(f"[bold red]Fehler:[/bold red] {escape(str(e))}")
 
 
 if __name__ == "__main__":
