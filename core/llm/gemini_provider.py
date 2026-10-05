@@ -79,7 +79,14 @@ class GeminiProvider(LLMProvider):
         contents = []
         for kind, payload in group_tool_results(messages):
             if kind == "user":
-                contents.append(t.Content(role="user", parts=[t.Part.from_text(text=payload or "(leer)")]))
+                if isinstance(payload, list):  # Text + Bild (describe_image)
+                    parts = [
+                        t.Part.from_bytes(data=p["data"], mime_type=p["mime"]) if p["type"] == "image" else t.Part.from_text(text=p["text"])
+                        for p in payload
+                    ]
+                else:
+                    parts = [t.Part.from_text(text=payload or "(leer)")]
+                contents.append(t.Content(role="user", parts=parts))
             elif kind == "assistant":
                 raw = payload.get("_raw") or {}
                 if raw.get("provider") == "gemini" and raw.get("content"):
@@ -112,7 +119,7 @@ class GeminiProvider(LLMProvider):
     def chat(self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> LLMResponse:
         t = self._types
         cfg = t.GenerateContentConfig(
-            system_instruction=system,
+            system_instruction=system or None,
             tools=self.convert_tools(tools),
             automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
         )

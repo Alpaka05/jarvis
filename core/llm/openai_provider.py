@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, b64, group_tool_results
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -46,6 +46,13 @@ class OpenAICompatProvider(LLMProvider):
         out: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         for kind, payload in group_tool_results(messages):
             if kind == "user":
+                if isinstance(payload, list):  # Text + Bild (describe_image)
+                    payload = [
+                        {"type": "image_url", "image_url": {"url": f"data:{p['mime']};base64,{b64(p['data'])}"}}
+                        if p["type"] == "image"
+                        else {"type": "text", "text": p["text"]}
+                        for p in payload
+                    ]
                 out.append({"role": "user", "content": payload})
             elif kind == "assistant":
                 msg: Dict[str, Any] = {"role": "assistant", "content": payload.get("content") or None}

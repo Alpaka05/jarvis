@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, b64, group_tool_results
 
 MAX_TOKENS = 8192
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -42,6 +42,13 @@ class AnthropicProvider(LLMProvider):
         out: List[Dict[str, Any]] = []
         for kind, payload in group_tool_results(messages):
             if kind == "user":
+                if isinstance(payload, list):  # Text + Bild (describe_image)
+                    payload = [
+                        {"type": "image", "source": {"type": "base64", "media_type": p["mime"], "data": b64(p["data"])}}
+                        if p["type"] == "image"
+                        else {"type": "text", "text": p["text"]}
+                        for p in payload
+                    ]
                 out.append({"role": "user", "content": payload})
             elif kind == "assistant":
                 raw = payload.get("_raw") or {}
