@@ -6,6 +6,8 @@ welchen Argumenten es das Tool aufruft.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
@@ -25,6 +27,29 @@ class ToolResult(BaseModel):
         return cls(success=False, output=output)
 
 
+class Risk(str, Enum):
+    """Wie vorsichtig der Agent mit einer Aktion umgeht."""
+
+    SAFE = "safe"  # ohne Rückfrage (lesen, Musik, Licht …)
+    GUARDED = "guarded"  # Rückfrage, sobald fremde Inhalte (Webseiten, Mails) im Gespräch stehen
+    CONFIRM = "confirm"  # immer Rückfrage (Mail senden, Türschloss, Browser-Agent …)
+
+
+@dataclass
+class Policy:
+    """Einstufung eines konkreten Tool-Aufrufs, bevor er ausgeführt wird.
+
+    Hintergrund: Webseiten und Mails können Anweisungen enthalten, die das LLM für echte hält
+    (Prompt-Injection). Deshalb fragt der Agent bei GUARDED-Aktionen nach, sobald solche Inhalte
+    im Gespräch stehen, und bei CONFIRM-Aktionen immer.
+    """
+
+    risk: Risk = Risk.SAFE
+    prompt: str = ""  # Bestätigungstext; die erste Zeile ist die Kurzfassung (wird im Sprachmodus vorgelesen)
+    url: Optional[str] = None  # Ziel-URL: steht sie wörtlich schon im Gespräch, entfällt die GUARDED-Rückfrage
+    untrusted_output: bool = False  # das Ergebnis enthält fremde Inhalte (Webseiten, Mails)
+
+
 class BaseTool:
     name: str = "tool"
     description: str = ""
@@ -38,6 +63,11 @@ class BaseTool:
         """Gibt einen Bestätigungstext zurück, wenn die Aktion vor Ausführung
         vom Nutzer freigegeben werden soll (z.B. E-Mail senden). Sonst None."""
         return None
+
+    def policy(self, **kwargs) -> Policy:
+        """Einstufung des Aufrufs. Standard: CONFIRM, wenn confirmation_prompt einen Text liefert."""
+        prompt = self.confirmation_prompt(**kwargs)
+        return Policy(Risk.CONFIRM, prompt) if prompt else Policy()
 
     def to_schema(self) -> Dict[str, Any]:
         return {

@@ -4,10 +4,16 @@ import smtplib
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
+from email.utils import formataddr, getaddresses
+from typing import List, Optional, Tuple
 
 from config import config
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, ToolResult
+
+
+def parse_recipients(to: str) -> List[Tuple[str, str]]:
+    """'Max <max@x.de>, anna@y.de' → [('Max', 'max@x.de'), ('', 'anna@y.de')]; ungültige fallen weg."""
+    return [(name, addr) for name, addr in getaddresses([to or ""]) if "@" in addr and " " not in addr]
 
 
 class MailTool(BaseTool):
@@ -37,12 +43,19 @@ class MailTool(BaseTool):
 
     def confirmation_prompt(self, **kwargs) -> Optional[str]:
         if kwargs.get("action") == "send":
+            # Vollständig zeigen: Was hier fehlt, ginge ungesehen mit raus
+            recipients = ", ".join(addr for _, addr in parse_recipients(kwargs.get("to", ""))) or "?"
             return (
-                f"E-Mail senden an {kwargs.get('to', '?')}\n"
+                f"E-Mail an {recipients} senden\n"
                 f"Betreff: {kwargs.get('subject', '(kein Betreff)')}\n"
-                f"Text: {(kwargs.get('body') or '')[:300]}"
+                f"Text:\n{kwargs.get('body') or ''}"
             )
         return None
+
+    def policy(self, **kwargs) -> Policy:
+        if kwargs.get("action") in ("read", "unread"):
+            return Policy(untrusted_output=True)  # Mails von außen können Anweisungen enthalten
+        return super().policy(**kwargs)
 
     # ── Lesen ────────────────────────────────────────────────────────────────
 
@@ -116,19 +129,23 @@ class MailTool(BaseTool):
     def send_email(self, recipient: str, subject: str, body: str) -> ToolResult:
         if not self._check_config():
             return ToolResult.fail("E-Mail ist nicht konfiguriert (EMAIL_ACCOUNT / EMAIL_PASSWORD in .env fehlen).")
+        recipients = parse_recipients(recipient)
+        if not recipients:
+            return ToolResult.fail("Bitte eine gültige Empfängeradresse angeben ('to').")
+        addresses = [addr for _, addr in recipients]
         try:
             host = config.SMTP_SERVER or "smtp." + config.EMAIL_ACCOUNT.split("@")[-1]
             msg = MIMEMultipart()
             msg["From"] = config.EMAIL_ACCOUNT
-            msg["To"] = recipient
+            msg["To"] = ", ".join(formataddr(r) for r in recipients)
             msg["Subject"] = subject
             msg.attach(MIMEText(body, "plain", "utf-8"))
 
             with smtplib.SMTP(host, config.SMTP_PORT, timeout=20) as server:
                 server.starttls()
                 server.login(config.EMAIL_ACCOUNT, config.EMAIL_PASSWORD)
-                server.sendmail(config.EMAIL_ACCOUNT, recipient, msg.as_string())
-            return ToolResult.ok(f"E-Mail an {recipient} mit Betreff '{subject}' gesendet.")
+                server.sendmail(config.EMAIL_ACCOUNT, addresses, msg.as_string())
+            return ToolResult.ok(f"E-Mail an {', '.join(addresses)} mit Betreff '{subject}' gesendet.")
         except Exception as e:
             return ToolResult.fail(f"Fehler beim Senden der E-Mail: {e}")
 
@@ -140,7 +157,7 @@ class MailTool(BaseTool):
             to = (kwargs.get("to") or "").strip()
             subject = (kwargs.get("subject") or "").strip()
             body = kwargs.get("body") or ""
-            if not to or "@" not in to:
+            if not parse_recipients(to):
                 return ToolResult.fail("Bitte eine gültige Empfängeradresse angeben ('to').")
             if not subject:
                 return ToolResult.fail("Bitte einen Betreff angeben ('subject').")

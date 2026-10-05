@@ -50,6 +50,11 @@ class GeminiProvider(LLMProvider):
         markers = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED", "timed out", "Timeout")
         return any(m in error_text for m in markers)
 
+    @staticmethod
+    def _is_unknown_model(error_text: str) -> bool:
+        """Modell gibt es (für diesen Key) nicht oder nicht mehr – Google stellt ältere Modelle ein."""
+        return "404" in error_text or "NOT_FOUND" in error_text
+
     def _available_models(self) -> List[str]:
         now = time.time()
         ready = [m for m in self.models if self._cooldown_until.get(m, 0) <= now]
@@ -124,11 +129,16 @@ class GeminiProvider(LLMProvider):
                 if self._is_rate_limited(text):
                     wait = self._retry_seconds(text)
                     self._cooldown_until[model] = time.time() + wait
-                    errors.append(f"{model}: Kontingent erschöpft, wieder in {int(wait)} s")
+                    errors.append(f"{model}: ausgelastet oder Kontingent erschöpft, wieder in {int(wait)} s")
+                    continue
+                if self._is_unknown_model(text):
+                    # Für diese Sitzung aus der Rotation nehmen, statt die übrigen Modelle gar nicht zu versuchen
+                    self._cooldown_until[model] = float("inf")
+                    errors.append(f"{model}: gibt es nicht (mehr) – GEMINI_FALLBACK_MODELS anpassen")
                     continue
                 raise LLMError(f"Gemini ({model}): {text[:300]}") from e
         if response is None:
-            raise LLMError("Gemini: alle Modelle ausgelastet – " + "; ".join(errors))
+            raise LLMError("Gemini: kein Modell verfügbar – " + "; ".join(errors))
 
         if not response.candidates:
             raise LLMError("Gemini: Leere Antwort (möglicherweise blockiert).")

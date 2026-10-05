@@ -2,7 +2,7 @@ from datetime import datetime
 
 from config import config
 from core import platform_utils
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, Risk, ToolResult
 
 WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 
@@ -28,6 +28,12 @@ class SystemTool(BaseTool):
         },
         "required": ["action"],
     }
+
+    def policy(self, action: str = "time", **kwargs) -> Policy:
+        if action == "open_url":
+            url = (kwargs.get("url") or "").strip()
+            return Policy(Risk.GUARDED, f"Im Browser öffnen: {url}", url=url)
+        return Policy()
 
     def get_time(self) -> ToolResult:
         now = datetime.now()

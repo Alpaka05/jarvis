@@ -14,11 +14,12 @@ from typing import Callable, Optional
 import numpy as np
 import sounddevice as sd
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from config import config
 from core import orb, platform_utils
-from core.agent import JarvisAgent
+from core.agent import UNTRUSTED_NOTE, JarvisAgent
 from core.voice import VoiceEngine
 from core.voice_input import VoiceInputListener, rms
 from core.wakeword import FRAME_SAMPLES, SAMPLE_RATE, WakeWordDetector
@@ -135,6 +136,7 @@ class VoiceLoop:
         self.barge_in_threshold = barge_in_threshold
         self.on_wake = on_wake
         self.running = False
+        self._stream = None  # offenes Mikrofon, für Rückfragen mitten in einer Anfrage
         self.ack_style = config.ACK_STYLE
         self.ack_voice = AckVoice(config.ACK_PHRASE) if self.ack_style in ("voice", "both") and config.TTS_ENABLED else None
 
@@ -159,6 +161,9 @@ class VoiceLoop:
             )
         )
         setattr(self.agent, "voice_mode", True)
+        # Rückfragen (Mail senden, Türschloss …) per Sprache statt über die Tastatur
+        keyboard_confirm = getattr(self.agent, "confirm", None)
+        setattr(self.agent, "confirm", self._confirm_by_voice)
         orb.state("idle")
         try:
             while self.running:
@@ -173,6 +178,8 @@ class VoiceLoop:
         finally:
             self.running = False
             self.voice.stop()
+            setattr(self.agent, "confirm", keyboard_confirm)
+            self._stream = None
             setattr(self.agent, "voice_mode", False)
             orb.state("idle")
 
@@ -184,6 +191,7 @@ class VoiceLoop:
     def _listen(self, stream):
         """Lauscht auf das Wake-Word, bis der Modus endet oder sich die Audiogeräte ändern."""
         self.detector.reset()
+        self._stream = stream
         frames = 0
         while self.running:
             frame, _ = stream.read(FRAME_SAMPLES)
@@ -224,7 +232,7 @@ class VoiceLoop:
                 orb.error("Nicht verstanden")
                 play_chime("fail")
                 return
-            self.console.print(f"[bold cyan]Du:[/bold cyan] {text}")
+            self.console.print(f"[bold cyan]Du:[/bold cyan] {escape(text)}")
             orb.transcript("user", text)
             if self._is_text_mode_request(text):  # „Wechsel in den Chatmodus“ → Sprachmodus verlassen
                 self.console.print("[dim]Okay, zurück in den Chatmodus.[/dim]")
@@ -236,7 +244,7 @@ class VoiceLoop:
 
             with self.console.status("[bold green]Denke nach...[/bold green]", spinner="dots"):
                 response = self.agent.process_query(text)
-            self.console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
+            self.console.print(Panel(escape(response), title="[bold green]Jarvis[/bold green]", border_style="green"))
             if getattr(self.agent, "last_usage", None) and self.agent.last_usage.calls:
                 self.console.print(f"  [dim]{self.agent.usage_summary(self.agent.last_usage)}[/dim]")
             orb.transcript("assistant", response)
@@ -257,6 +265,54 @@ class VoiceLoop:
                 return
             orb.state("listening")
             self.console.print("[dim]… noch etwas? (ohne Wake-Word)[/dim]")
+
+    # ── Rückfrage per Sprache ────────────────────────────────────────────────
+
+    YES_WORDS = {
+        "ja", "jawohl", "jap", "jo", "yes", "okay", "ok", "genau", "bestätigt", "bestätige", "klar", "sicher",
+        "gerne", "gern", "mach", "machs", "los", "richtig", "korrekt",
+    }
+    NO_WORDS = {"nein", "nö", "nee", "ne", "no", "nicht", "stopp", "stop", "abbrechen", "halt", "lieber", "falsch"}
+
+    @classmethod
+    def _is_yes(cls, text: str) -> bool:
+        """Nur ein klares Ja zählt; sobald ein Nein-Wort vorkommt („ja, aber nicht jetzt“), gilt Nein."""
+        words = "".join(ch for ch in (text or "").lower() if ch.isalpha() or ch == " ").split()
+        return not any(w in cls.NO_WORDS for w in words) and any(w in cls.YES_WORDS for w in words)
+
+    def _confirm_by_voice(self, prompt: str) -> bool:
+        """Liest die Rückfrage vor und wartet auf „ja“ oder „nein“. Keine oder unklare Antwort = Nein."""
+        stream = self._stream
+        lines = prompt.strip().splitlines()
+        summary = (lines[0] if lines else "Diese Aktion ausführen").rstrip(" .:?")
+        self.console.print(
+            Panel(escape(prompt), title="[bold yellow]Bestätigung nötig – sag „ja“ oder „nein“[/bold yellow]", border_style="yellow")
+        )
+        if stream is None:
+            return False
+        question = f"{summary}. Soll ich das machen?"
+        if UNTRUSTED_NOTE in prompt:
+            question += " Achtung, das könnte aus einer Webseite oder Mail stammen."
+        self.voice.speak(question, listen_for_interrupt=False, block=True)
+        # Was sich während Denken und Vorlesen im Puffer gesammelt hat (inkl. Echo), verwerfen
+        try:
+            pending = int(getattr(stream, "read_available", 0) or 0)
+            if pending:
+                stream.read(pending)
+            stream.read(int(SAMPLE_RATE * 0.25))
+        except Exception:
+            pass
+        orb.state("listening")
+        recording = self.listener.record_from_stream(stream, start_timeout=6.0)
+        orb.state("thinking")
+        if recording is None:
+            self.console.print("[dim]Keine Antwort – nicht ausgeführt.[/dim]")
+            return False
+        answer = self.listener.recognize(recording)
+        self.console.print(f"[bold cyan]Du:[/bold cyan] {escape(answer) or '(nicht verstanden)'}")
+        confirmed = self._is_yes(answer)
+        self.console.print("[green]Bestätigt.[/green]" if confirmed else "[dim]Nicht ausgeführt.[/dim]")
+        return confirmed
 
     STOP_PHRASES = {
         "stopp", "stop", "stopp stopp", "halt", "danke", "danke das reicht", "das reicht", "reicht",

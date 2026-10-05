@@ -67,6 +67,21 @@ class OpenAICompatProvider(LLMProvider):
 
     # ── Aufruf ───────────────────────────────────────────────────────────────
 
+    def _installed_models_hint(self) -> str:
+        """Bei Ollama: welche Modelle tatsächlich installiert sind (sonst leer)."""
+        if self.name != "ollama":
+            return ""
+        try:
+            import requests
+
+            base = str(self.client.base_url).rstrip("/").removesuffix("/v1")
+            names = [m["name"] for m in requests.get(f"{base}/api/tags", timeout=3).json().get("models", [])]
+        except Exception:
+            return ""
+        if not names:
+            return f" Es ist noch kein Modell installiert: ollama pull {self.model}"
+        return f" Installiert: {', '.join(names)} – OLLAMA_MODEL in der .env anpassen oder: ollama pull {self.model}"
+
     def chat(self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> LLMResponse:
         o = self._openai
         params: Dict[str, Any] = {
@@ -84,7 +99,7 @@ class OpenAICompatProvider(LLMProvider):
         except o.RateLimitError:
             raise LLMError(f"{self.name}: Rate-Limit erreicht, bitte kurz warten.")
         except o.NotFoundError as e:
-            raise LLMError(f"{self.name}: Modell '{self.model}' nicht gefunden ({e}).") from e
+            raise LLMError(f"{self.name}: Modell '{self.model}' nicht gefunden.{self._installed_models_hint()}") from e
         except o.APIConnectionError as e:
             raise LLMError(f"{self.name}: Keine Verbindung zu {self.client.base_url} ({e})") from e
         except o.APIStatusError as e:

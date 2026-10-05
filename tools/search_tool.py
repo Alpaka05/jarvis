@@ -7,13 +7,16 @@ Dazu: Nachrichtensuche und das Auslesen einer Webseite als Text.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
-from typing import Any, Dict, List
+import socket
+from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
 from config import config
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, Risk, ToolResult
 
 # Wikipedia & Co. verlangen einen identifizierbaren User-Agent; manche Seiten sperren dagegen alles,
 # was nicht wie ein Browser aussieht. Daher zuerst ehrlich, bei 403 als Browser erneut.
@@ -23,6 +26,29 @@ USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
 )
 MAX_PAGE_CHARS = 6000
+MAX_REDIRECTS = 5
+
+
+def blocked_reason(url: str) -> Optional[str]:
+    """Grund, warum read_url diese Adresse nicht laden darf, sonst None.
+
+    Gesperrt sind lokale und private Ziele (Router, Home Assistant, localhost …): Sonst könnte eine
+    präparierte Webseite Jarvis dazu bringen, Geräte im Heimnetz abzufragen oder anzusprechen.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return f"Ungültige URL: {url}"
+    try:
+        infos = socket.getaddrinfo(parts.hostname, parts.port or 443, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, ValueError) as e:
+        return f"Host '{parts.hostname}' nicht gefunden ({e})."
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return f"'{parts.hostname}' zeigt auf eine lokale/private Adresse ({ip}) – aus Sicherheitsgründen gesperrt."
+    return None
 
 
 class SearchTool(BaseTool):
@@ -118,38 +144,25 @@ class SearchTool(BaseTool):
     def read_url(self, url: str) -> ToolResult:
         if not url.lower().startswith(("http://", "https://")):
             url = "https://" + url
-        html = None
+        page: Optional[tuple] = None
         last_error: Exception | None = None
         for ua in USER_AGENTS:
             try:
-                with requests.get(
-                    url, headers={"User-Agent": ua, "Accept-Language": config.LANGUAGE}, timeout=(8, 12), stream=True
-                ) as resp:
-                    if resp.status_code in (401, 403, 429):
-                        last_error = RuntimeError(f"HTTP {resp.status_code}")
-                        continue
-                    resp.raise_for_status()
-                    ctype = resp.headers.get("content-type", "")
-                    if "html" not in ctype and "text" not in ctype:
-                        return ToolResult.fail(f"Kein lesbarer Textinhalt (Content-Type {ctype}).")
-                    # Begrenzt lesen: schützt vor riesigen Seiten und tröpfelnden Servern
-                    chunks, size = [], 0
-                    for chunk in resp.iter_content(chunk_size=65536):
-                        chunks.append(chunk)
-                        size += len(chunk)
-                        if size >= MAX_DOWNLOAD_BYTES:
-                            break
-                    resp.encoding = resp.encoding or "utf-8"
-                    html = b"".join(chunks).decode(resp.encoding, errors="ignore")
-                    break
+                page = self._download(url, ua)
+                break
+            except _Blocked as e:
+                return ToolResult.fail(str(e))
             except Exception as e:
                 last_error = e
-        if html is None:
+        if page is None:
             return ToolResult.fail(f"Seite konnte nicht geladen werden: {last_error}")
+        raw, charset, url = page
 
         from bs4 import BeautifulSoup
 
-        soup = BeautifulSoup(html, "html.parser")
+        # Bytes statt requests' Raten: ohne charset im Header nähme requests ISO-8859-1 an und aus
+        # „ä“ würde „Ã¤“. BeautifulSoup liest dann das <meta charset> der Seite.
+        soup = BeautifulSoup(raw, "html.parser", from_encoding=charset)
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
             tag.decompose()
         main = soup.find("main") or soup.find("article") or soup.body or soup
@@ -159,6 +172,49 @@ class SearchTool(BaseTool):
             return ToolResult.fail("Seite enthält keinen auslesbaren Text (vermutlich per JavaScript gerendert).")
         truncated = " …[gekürzt]" if len(text) > MAX_PAGE_CHARS else ""
         return ToolResult.ok(f"{title}\n{url}\n\n{text[:MAX_PAGE_CHARS]}{truncated}", data={"title": title, "url": url})
+
+    def _download(self, url: str, ua: str) -> tuple:
+        """Lädt eine Seite begrenzt. Weiterleitungen werden einzeln geprüft (blocked_reason), damit
+        eine öffentliche Seite nicht ins Heimnetz umleiten kann. Gibt (Bytes, charset, End-URL) zurück."""
+        for _ in range(MAX_REDIRECTS + 1):
+            reason = blocked_reason(url)
+            if reason:
+                raise _Blocked(reason)
+            with requests.get(
+                url,
+                headers={"User-Agent": ua, "Accept-Language": config.LANGUAGE},
+                timeout=(8, 12),
+                stream=True,
+                allow_redirects=False,
+            ) as resp:
+                if resp.is_redirect:
+                    url = urljoin(url, resp.headers.get("location", ""))
+                    continue
+                if resp.status_code in (401, 403, 429):
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+                resp.raise_for_status()
+                ctype = resp.headers.get("content-type", "")
+                if "html" not in ctype and "text" not in ctype:
+                    raise _Blocked(f"Kein lesbarer Textinhalt (Content-Type {ctype}).")
+                # Begrenzt lesen: schützt vor riesigen Seiten und tröpfelnden Servern
+                chunks, size = [], 0
+                for chunk in resp.iter_content(chunk_size=65536):
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size >= MAX_DOWNLOAD_BYTES:
+                        break
+                match = re.search(r"charset=([\w-]+)", ctype)
+                return b"".join(chunks), (match.group(1) if match else None), url
+        raise RuntimeError("zu viele Weiterleitungen")
+
+    # ── Rückfragen ───────────────────────────────────────────────────────────
+
+    def policy(self, action: str = "search", query: str = "", **kwargs) -> Policy:
+        if action == "read_url":
+            url = (kwargs.get("url") or query or "").strip()
+            # Eine selbst zusammengebaute URL kann Daten nach außen tragen (…?q=<Inhalt einer Mail>)
+            return Policy(Risk.GUARDED, f"Webseite laden: {url}", url=url, untrusted_output=True)
+        return Policy(untrusted_output=True)  # Suchtreffer stammen von fremden Seiten
 
     # ── Dispatch ─────────────────────────────────────────────────────────────
 
@@ -173,3 +229,7 @@ class SearchTool(BaseTool):
             return ToolResult.fail("Bitte eine Suchanfrage angeben ('query').")
         n = max(1, min(int(kwargs.get("max_results") or 5), 10))
         return self.search(q, n, news=(action == "news"))
+
+
+class _Blocked(Exception):
+    """read_url darf/kann die Seite nicht laden – kein erneuter Versuch mit anderem User-Agent."""

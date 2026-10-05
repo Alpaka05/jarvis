@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from config import config
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, Risk, ToolResult
 
 
 class CalendarTool(BaseTool):
@@ -39,6 +39,17 @@ class CalendarTool(BaseTool):
         self.calendar_file.parent.mkdir(parents=True, exist_ok=True)
         if not self.calendar_file.exists():
             self.calendar_file.write_text("[]", encoding="utf-8")
+
+    # ── Rückfragen ───────────────────────────────────────────────────────────
+
+    def policy(self, action: str = "list", **kwargs) -> Policy:
+        title = (kwargs.get("title") or "").strip()
+        when = " ".join(x for x in (kwargs.get("date") or "", kwargs.get("time") or "") if x)
+        if action == "add":
+            return Policy(Risk.GUARDED, f"Termin anlegen: {title} {when}".strip())
+        if action == "delete":
+            return Policy(Risk.GUARDED, f"Termin löschen: {title} {when}".strip())
+        return Policy()
 
     # ── Persistenz ───────────────────────────────────────────────────────────
 
@@ -99,15 +110,23 @@ class CalendarTool(BaseTool):
         )
 
     def delete_event(self, title: str, date_str: str = "") -> ToolResult:
+        """Löscht Termine mit genau diesem Titel. Ohne exakten Treffer nur, wenn genau ein Titel den
+        Begriff enthält – sonst würde z.B. 'e' fast alles löschen."""
         events = self._load_events()
         title_l = title.lower().strip()
-        remaining, removed = [], []
-        for ev in events:
-            matches_title = title_l in ev.get("title", "").lower()
-            matches_date = (not date_str) or ev.get("datetime", "").startswith(date_str)
-            (removed if matches_title and matches_date else remaining).append(ev)
+        on_date = [ev for ev in events if (not date_str) or ev.get("datetime", "").startswith(date_str)]
+        removed = [ev for ev in on_date if ev.get("title", "").lower().strip() == title_l]
+        if not removed:
+            partial = [ev for ev in on_date if title_l in ev.get("title", "").lower()]
+            if len(partial) > 1:
+                names = "; ".join(f"'{ev['title']}' ({ev['datetime'][:16]})" for ev in partial)
+                return ToolResult.fail(
+                    f"Mehrere Termine passen zu '{title}': {names}. Bitte den genauen Titel (und ggf. das Datum) angeben."
+                )
+            removed = partial
         if not removed:
             return ToolResult.fail(f"Kein Termin mit Titel '{title}' gefunden.")
+        remaining = [ev for ev in events if not any(ev is r for r in removed)]
         self._save_events(remaining)
         names = ", ".join(f"'{ev['title']}' ({ev['datetime'][:16]})" for ev in removed)
         return ToolResult.ok(f"{len(removed)} Termin(e) gelöscht: {names}", data=removed)

@@ -1,11 +1,25 @@
+import json
+import re
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from config import config
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, Risk, ToolResult
 
 MAX_LISTED = 60
+
+# Diese Domains schaltet Jarvis ohne Rückfrage (Licht, Musik, Heizung …). Alles andere – Schlösser,
+# Alarmanlage, Rollläden/Garagentor, Skripte, Automationen, shell_command, notify, Neustart –
+# wird immer bestätigt, auch unbekannte Domains.
+SAFE_DOMAINS = {
+    "light", "switch", "fan", "media_player", "climate", "scene", "humidifier", "vacuum", "remote",
+    "input_boolean", "input_number", "input_select", "input_text", "select", "number", "timer", "counter",
+}
+# Ziel-Angaben, mit denen 'data' den Aufruf auf andere Geräte ausweiten könnte (z.B. entity_id: all)
+TARGET_KEYS = {"entity_id", "device_id", "area_id", "floor_id", "label_id"}
+ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+SERVICE_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 class HomeAssistantTool(BaseTool):
@@ -43,6 +57,29 @@ class HomeAssistantTool(BaseTool):
         },
         "required": ["action"],
     }
+
+    # ── Rückfragen ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _service_call(kwargs: Dict[str, Any]) -> Optional[tuple]:
+        """(entity_id, service, data) für steuernde Aufrufe, sonst None."""
+        action = kwargs.get("action", "list_entities")
+        if action not in ("call_service", "turn_on", "turn_off", "toggle"):
+            return None
+        service = kwargs.get("service") or (action if action != "call_service" else "turn_on")
+        data = kwargs.get("data") if isinstance(kwargs.get("data"), dict) else None
+        return str(kwargs.get("entity_id") or ""), str(service), data
+
+    def policy(self, **kwargs) -> Policy:
+        call = self._service_call(kwargs)
+        if call is None:
+            return Policy()
+        entity_id, service, data = call
+        domain = entity_id.split(".")[0]
+        if domain in SAFE_DOMAINS:
+            return Policy()
+        extra = f"\nDaten: {json.dumps(data, ensure_ascii=False)}" if data else ""
+        return Policy(Risk.CONFIRM, f"Smart Home: {domain}.{service} auf {entity_id} ausführen{extra}")
 
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {config.HA_TOKEN}", "Content-Type": "application/json"}
@@ -105,6 +142,8 @@ class HomeAssistantTool(BaseTool):
     def get_state(self, entity_id: str) -> ToolResult:
         if not self._is_configured():
             return self._not_configured()
+        if not ENTITY_RE.match(entity_id):
+            return ToolResult.fail(f"Ungültige entity_id '{entity_id}' (erwartet z.B. light.wohnzimmer).")
         try:
             resp = requests.get(f"{config.HA_URL}/api/states/{entity_id}", headers=self._headers(), timeout=8)
             if resp.status_code == 404:
@@ -121,13 +160,19 @@ class HomeAssistantTool(BaseTool):
     def call_service(self, entity_id: str, service: str, data: Optional[Dict[str, Any]] = None) -> ToolResult:
         if not self._is_configured():
             return self._not_configured()
-        if "." not in entity_id:
+        # Geprüft wird hier, nicht nur im Schema: entity_id und Dienst landen im URL-Pfad
+        if not ENTITY_RE.match(entity_id):
             return ToolResult.fail(f"Ungültige entity_id '{entity_id}' (erwartet z.B. light.wohnzimmer).")
+        if not SERVICE_RE.match(service):
+            return ToolResult.fail(f"Ungültiger Dienst '{service}' (erwartet z.B. turn_on).")
         domain = entity_id.split(".")[0]
         # Szenen und Skripte werden immer über turn_on aktiviert
         if domain in ("scene", "script") and service in ("activate", "run", "start"):
             service = "turn_on"
-        payload = {"entity_id": entity_id, **(data or {})}
+        # 'data' darf nur Einstellungen liefern, nie das Ziel ändern – sonst ginge die bestätigte
+        # (oder als harmlos eingestufte) Aktion an andere Geräte
+        settings = {k: v for k, v in (data or {}).items() if k not in TARGET_KEYS}
+        payload = {**settings, "entity_id": entity_id}
         try:
             resp = requests.post(
                 f"{config.HA_URL}/api/services/{domain}/{service}", headers=self._headers(), json=payload, timeout=8

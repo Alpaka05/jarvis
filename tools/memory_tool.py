@@ -1,7 +1,7 @@
 from typing import Optional
 
 from core.memory import CATEGORIES, MemoryStore
-from tools.base import BaseTool, ToolResult
+from tools.base import BaseTool, Policy, Risk, ToolResult
 
 
 class MemoryTool(BaseTool):
@@ -38,6 +38,18 @@ class MemoryTool(BaseTool):
 
     def __init__(self, store: MemoryStore):
         self.store = store
+
+    def policy(self, action: str = "list", **kwargs) -> Policy:
+        # Gespeicherte Fakten stehen in jedem künftigen System-Prompt: eine Webseite oder Mail, die
+        # Jarvis etwas „merken“ lässt, wirkte dauerhaft weiter
+        content = (kwargs.get("content") or "").strip()
+        if action == "remember":
+            return Policy(Risk.GUARDED, f"Im Gedächtnis speichern: {content}")
+        if action == "update":
+            return Policy(Risk.GUARDED, f"Gespeicherten Fakt #{kwargs.get('id')} ändern in: {content}")
+        if action == "forget":
+            return Policy(Risk.GUARDED, f"Gespeicherten Fakt #{kwargs.get('id')} löschen")
+        return Policy()
 
     @staticmethod
     def _fmt_fact(f: dict) -> str:
