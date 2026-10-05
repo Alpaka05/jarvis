@@ -61,3 +61,82 @@ def test_openai_message_conversion():
     assert msgs[3] == {"role": "tool", "tool_call_id": "t1", "content": "ok"}
     tools = OpenAICompatProvider.convert_tools(TOOLS)
     assert tools[0]["type"] == "function" and tools[0]["function"]["name"] == "homeassistant"
+
+
+# ── Gemini-Rotation und Ollama-Hinweis ───────────────────────────────────────
+
+import pytest  # noqa: E402
+
+from core.llm.base import LLMError  # noqa: E402
+
+
+def _gemini(monkeypatch, outcomes):
+    """Gemini-Provider, dessen Modelle der Reihe nach die angegebenen Fehler/Antworten liefern."""
+    pytest.importorskip("google.genai")
+    from core.llm.gemini_provider import GeminiProvider
+
+    provider = GeminiProvider("key", model="m1", fallback_models=["m2", "m3"])
+    tried = []
+
+    def generate_content(model, contents, config):
+        tried.append(model)
+        outcome = outcomes[model]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(provider.client.models, "generate_content", generate_content)
+    return provider, tried
+
+
+def test_gemini_skips_retired_model_and_uses_the_next(monkeypatch):
+    from google.genai import types
+
+    ok = types.GenerateContentResponse(
+        candidates=[types.Candidate(content=types.Content(role="model", parts=[types.Part.from_text(text="hallo")]))]
+    )
+    provider, tried = _gemini(
+        monkeypatch,
+        {
+            "m1": RuntimeError("429 RESOURCE_EXHAUSTED retry in 30s"),
+            "m2": RuntimeError("404 NOT_FOUND. This model is no longer available to new users."),
+            "m3": ok,
+        },
+    )
+    assert provider.chat("sys", [{"role": "user", "content": "hi"}], []).text == "hallo"
+    assert tried == ["m1", "m2", "m3"]
+    # m2 bleibt für die Sitzung draußen
+    tried.clear()
+    provider._cooldown_until.pop("m1")
+    provider.chat("sys", [{"role": "user", "content": "hi"}], [])
+    assert "m2" not in tried
+
+
+def test_gemini_reports_every_model_when_none_works(monkeypatch):
+    provider, _ = _gemini(
+        monkeypatch,
+        {
+            "m1": RuntimeError("429 RESOURCE_EXHAUSTED"),
+            "m2": RuntimeError("503 UNAVAILABLE high demand"),
+            "m3": RuntimeError("404 NOT_FOUND"),
+        },
+    )
+    with pytest.raises(LLMError) as exc:
+        provider.chat("sys", [{"role": "user", "content": "hi"}], [])
+    message = str(exc.value)
+    assert "m1" in message and "m2" in message and "m3" in message and "gibt es nicht" in message
+
+
+def test_ollama_missing_model_lists_installed_models(monkeypatch):
+    import requests
+
+    from core.llm.openai_provider import make_ollama_provider
+
+    class Tags:
+        def json(self):
+            return {"models": [{"name": "gemma4:26b"}]}
+
+    monkeypatch.setattr(requests, "get", lambda url, timeout: Tags() if url.endswith("/api/tags") else None)
+    provider = make_ollama_provider("http://localhost:11434", "llama3.1:8b")
+    hint = provider._installed_models_hint()
+    assert "gemma4:26b" in hint and "OLLAMA_MODEL" in hint

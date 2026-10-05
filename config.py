@@ -42,7 +42,7 @@ class Config:
     GEMINI_API_KEY: str = _env("GEMINI_API_KEY")
     GEMINI_MODEL: str = _env("GEMINI_MODEL", "gemini-3.6-flash")
     # Weitere Modelle, auf die bei erschöpftem Minuten-Kontingent rotiert wird (jedes Modell hat ein eigenes)
-    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-flash-lite")
+    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash-lite")
 
     OLLAMA_HOST: str = _env("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL: str = _env("OLLAMA_MODEL", "llama3.1:8b")
