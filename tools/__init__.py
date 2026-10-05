@@ -7,6 +7,7 @@ from tools.mail_tool import MailTool
 from tools.memory_tool import MemoryTool
 from tools.obsidian_tool import ObsidianTool
 from tools.orb_tool import OrbTool
+from tools.screen_tool import ScreenTool
 from tools.search_tool import SearchTool
 from tools.spotify_tool import SpotifyTool
 from tools.system_tool import SystemTool
@@ -21,6 +22,7 @@ __all__ = [
     "MemoryTool",
     "ObsidianTool",
     "OrbTool",
+    "ScreenTool",
     "HomeAssistantTool",
     "SearchTool",
     "SystemTool",
@@ -45,4 +47,4 @@ def default_tools(memory=None) -> list:
         SearchTool(),
         BrowserTool(),
         OrbTool(),
-    ] + ([ObsidianTool()] if config.OBSIDIAN_VAULT else [])
+    ] + ([ObsidianTool()] if config.OBSIDIAN_VAULT else []) + ([ScreenTool()] if config.SCREEN_ENABLED else [])

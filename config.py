@@ -105,6 +105,9 @@ class Config:
     ORB_ENABLED: bool = _bool("ORB_ENABLED", False)  # WebSocket-Server für das Orb-Fenster starten
     ORB_PORT: int = int(_env("ORB_PORT", "8765"))  # lauscht nur auf 127.0.0.1
 
+    # ─── Bildschirm ──────────────────────────────────────────────────────
+    SCREEN_ENABLED: bool = _bool("SCREEN_ENABLED", True)  # screen-Tool: Screenshot auf Nachfrage ans LLM
+
     # ── Plattform ────────────────────────────────────────────────────────────
     IS_WINDOWS = IS_WINDOWS
     IS_MAC = IS_MAC
