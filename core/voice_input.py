@@ -24,6 +24,7 @@ from core import orb, platform_utils
 console = Console()
 
 VAD_FRAME = 480  # 30 ms @ 16 kHz, vom Silero-VAD erwartet
+STT_TIMEOUT_SECONDS = 8  # Google-Spracherkennung: Netz-Timeout pro Anfrage
 
 
 def rms(chunk: np.ndarray) -> float:
@@ -41,6 +42,8 @@ class VoiceInputListener:
         silence_limit: float = 1.4,
     ):
         self.recognizer = sr.Recognizer()
+        # Ohne Timeout wartet urlopen bei hängendem Netz ewig und der Sprachmodus friert ein
+        self.recognizer.operation_timeout = STT_TIMEOUT_SECONDS
         self.language = language
         self.sample_rate = sample_rate
         self.chunk_size = VAD_FRAME * 2  # 60 ms – ganzzahliges Vielfaches des VAD-Frames
@@ -179,6 +182,9 @@ class VoiceInputListener:
             return ""
         except sr.RequestError as e:
             console.print(f"[bold red]Spracherkennung nicht erreichbar:[/bold red] {e}")
+            return ""
+        except TimeoutError:
+            console.print(f"[bold red]Spracherkennung antwortet nicht[/bold red] (> {STT_TIMEOUT_SECONDS} s).")
             return ""
         except OSError as e:  # z.B. FLAC-Konverter fehlt oder läuft nicht (Apple Silicon: brew install flac)
             console.print(f"[bold red]Spracherkennung fehlgeschlagen:[/bold red] {e}")
