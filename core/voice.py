@@ -9,6 +9,7 @@ Ohne Internet oder mit TTS_ENGINE=system wird die Betriebssystem-Stimme genutzt.
 """
 from __future__ import annotations
 
+import logging
 import queue
 import re
 import threading
@@ -18,6 +19,8 @@ import numpy as np
 
 from config import config
 from core import orb, platform_utils
+
+log = logging.getLogger(__name__)
 
 try:  # Mikrofon-Überwachung und Wiedergabe sind optional
     import sounddevice as sd
@@ -158,16 +161,38 @@ class VoiceEngine:
         device = platform_utils.default_output_device()
         rate = platform_utils.output_sample_rate(device) or EDGE_SAMPLE_RATE
 
+        abandoned = threading.Event()  # Wiedergabe beendet (Stopp, Fehler) – niemand liest mehr
+
+        def put(item) -> bool:
+            # Mit Zeitlimit: Bei voller Warteschlange und beendeter Wiedergabe hinge der Thread sonst
+            # für immer (samt bereits synthetisiertem Audio im Speicher)
+            while not (stop_event.is_set() or abandoned.is_set()):
+                try:
+                    q.put(item, timeout=0.2)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+
         def producer():
             for sentence in sentences:
                 if stop_event.is_set():
                     break
                 pcm = synthesize_pcm(sentence, rate)
-                q.put(pcm if pcm is not None else _FAIL)
-            q.put(None)
+                if pcm is None:
+                    log.warning("Edge-TTS: Satz nicht synthetisiert: %r", sentence[:60])
+                if not put(pcm if pcm is not None else _FAIL):
+                    return
+            put(None)
 
-        threading.Thread(target=producer, daemon=True).start()
+        threading.Thread(target=producer, name="tts-producer", daemon=True).start()
 
+        try:
+            return self._play_queue(q, rate, device, stop_event, listen_for_interrupt)
+        finally:
+            abandoned.set()
+
+    def _play_queue(self, q, rate, device, stop_event, listen_for_interrupt) -> bool:
         first = q.get()
         if first is None or first is _FAIL:
             return False  # Edge nicht erreichbar → Systemstimme
@@ -184,6 +209,7 @@ class VoiceEngine:
                         self._write_pcm(out, item, stop_event, chunk=rate // 30)
                     item = q.get()
         except Exception:
+            log.warning("Wiedergabe über Ausgabegerät %r fehlgeschlagen", device, exc_info=True)
             return stop_event.is_set()  # Ausgabegerät-Problem → Fallback nur, wenn nicht gestoppt
         return True
 

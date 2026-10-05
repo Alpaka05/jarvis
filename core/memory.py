@@ -11,8 +11,10 @@ LLM pflegt sie selbst über das memory-Tool (remember / update / forget).
 """
 from __future__ import annotations
 
+import functools
 import re
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,20 +48,35 @@ def _words(query: str) -> List[str]:
     return [w for w in re.split(r"[^\wäöüÄÖÜß]+", query.lower()) if len(w) >= 3]
 
 
+def _locked(method):
+    """Eine Verbindung, mehrere Threads (Hauptschleife, Tool-Threads, auch nach Timeout weiterlaufende):
+    sqlite3 erlaubt das nur, wenn sich Aufrufe nicht überschneiden."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MemoryStore:
     def __init__(self, db_path: Path | str):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
+    @_locked
     def close(self):
         self._conn.close()
 
     # ── Fakten ───────────────────────────────────────────────────────────────
 
+    @_locked
     def add_fact(self, content: str, category: str = "fact") -> Dict[str, Any]:
         content = " ".join(content.split()).strip()
         if not content:
@@ -78,6 +95,7 @@ class MemoryStore:
         self._conn.commit()
         return {"id": cur.lastrowid, "content": content, "category": category, "created_at": now, "updated_at": now}
 
+    @_locked
     def update_fact(self, fact_id: int, content: str) -> bool:
         content = " ".join(content.split()).strip()
         cur = self._conn.execute(
@@ -86,11 +104,13 @@ class MemoryStore:
         self._conn.commit()
         return cur.rowcount > 0
 
+    @_locked
     def delete_fact(self, fact_id: int) -> bool:
         cur = self._conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
         self._conn.commit()
         return cur.rowcount > 0
 
+    @_locked
     def list_facts(self, limit: int = 200, category: Optional[str] = None) -> List[Dict[str, Any]]:
         if category:
             rows = self._conn.execute(
@@ -100,9 +120,11 @@ class MemoryStore:
             rows = self._conn.execute("SELECT * FROM facts ORDER BY id LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    @_locked
     def count_facts(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
 
+    @_locked
     def search_facts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Einfache Wortsuche: Treffer werden nach Anzahl passender Wörter sortiert."""
         words = _words(query)
@@ -119,6 +141,7 @@ class MemoryStore:
         scored.sort(key=lambda t: (-t[0], t[1]))
         return [d for _, _, d in scored[:limit]]
 
+    @_locked
     def facts_for_prompt(self, limit: int = 50) -> str:
         # Bei mehr Fakten als Platz die zuletzt gespeicherten/geänderten nehmen – sonst fielen
         # neue Fakten und Korrekturen still heraus. Ausgabe nach id, damit der Prompt stabil bleibt.
@@ -132,6 +155,7 @@ class MemoryStore:
 
     # ── Gesprächsprotokoll ───────────────────────────────────────────────────
 
+    @_locked
     def log_message(self, session_id: str, role: str, content: str):
         content = content.strip()
         if not content:
@@ -142,6 +166,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_locked
     def search_conversations(self, query: str, days: int = 30, limit: int = 15) -> List[Dict[str, Any]]:
         since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
         words = _words(query)
@@ -166,6 +191,7 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_locked
     def recent_sessions_summary(self, days: int = 7, limit: int = 30) -> List[Dict[str, Any]]:
         since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
         rows = self._conn.execute(
