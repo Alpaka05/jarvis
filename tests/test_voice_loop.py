@@ -229,3 +229,49 @@ def test_mic_stream_is_reopened_when_audio_devices_change(monkeypatch):
     )
     loop.run()
     assert len(opened) == 2
+
+
+# ── Rückfrage per Sprache ────────────────────────────────────────────────────
+
+
+def test_yes_no_detection():
+    assert VoiceLoop._is_yes("Ja")
+    assert VoiceLoop._is_yes("ja mach das")
+    assert VoiceLoop._is_yes("Okay, los")
+    assert not VoiceLoop._is_yes("Nein")
+    assert not VoiceLoop._is_yes("ja aber nicht jetzt")
+    assert not VoiceLoop._is_yes("lieber nicht")
+    assert not VoiceLoop._is_yes("wie bitte")
+    assert not VoiceLoop._is_yes("")
+
+
+def _confirm_loop(monkeypatch, answer):
+    from core.agent import UNTRUSTED_NOTE
+
+    monkeypatch.setattr(voice_loop_module, "orb", OrbRecorder())
+    listener = FakeListener([np.ones((1600, 1), dtype=np.int16)] if answer is not None else [])
+    listener.recognize = lambda recording: answer
+    voice = FakeVoice()
+    loop = VoiceLoop.__new__(VoiceLoop)
+    loop.console = Console(file=open("/dev/null", "w"))
+    loop.listener, loop.voice = listener, voice
+    loop._stream = FakeStream([])
+    return loop, voice, UNTRUSTED_NOTE
+
+
+def test_voice_confirmation_reads_question_and_accepts_yes(monkeypatch):
+    loop, voice, _ = _confirm_loop(monkeypatch, "Ja, bitte")
+    assert loop._confirm_by_voice("E-Mail an max@x.de senden\nBetreff: Hallo\nText:\nlang …") is True
+    assert voice.spoken == ["E-Mail an max@x.de senden. Soll ich das machen?"]
+
+
+def test_voice_confirmation_warns_about_untrusted_content_and_no_answer_means_no(monkeypatch):
+    loop, voice, note = _confirm_loop(monkeypatch, None)
+    assert loop._confirm_by_voice(f"Im Browser öffnen: https://x.example\n\n{note}") is False
+    assert "Webseite oder Mail" in voice.spoken[0]
+
+
+def test_voice_confirmation_without_microphone_is_no(monkeypatch):
+    loop, voice, _ = _confirm_loop(monkeypatch, "ja")
+    loop._stream = None
+    assert loop._confirm_by_voice("Senden") is False
