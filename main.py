@@ -2,6 +2,7 @@ import json
 import sys
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, InvalidResponse, Prompt
 
@@ -58,6 +59,7 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
     if spotify_backend == "web" and not spotify_tool.is_linked():
         spotify_label = "Web API, [yellow]noch nicht verknüpft – tippe 'spotify login'[/yellow]"
 
+    orb_off = "aus [dim](tippe 'orb')[/dim]"
     rows = [
         f"🤖 [bold yellow]LLM:[/bold yellow] {llm_line}",
         f"📅 [bold yellow]Kalender:[/bold yellow] [green]lokal[/green]",
@@ -68,7 +70,7 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
         f"🧠 [bold yellow]Gedächtnis:[/bold yellow] [green]{agent.memory.count_facts() if agent.memory else 0} Fakten[/green] [dim]({config.MEMORY_DB.name}, tippe 'memory')[/dim]",
         f"🔊 [bold yellow]Sprachausgabe:[/bold yellow] {_yes_no(voice.enabled, voice.label, 'deaktiviert')}",
         f"🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
-        f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, "aus [dim](tippe 'orb')[/dim]")}",
+        f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, orb_off)}",
     ]
     for note in agent.notes:
         rows.append(f"⚠️  [yellow]{note}[/yellow]")
@@ -144,7 +146,7 @@ def confirm_action(prompt: str) -> bool:
     for live in reversed(lives):
         live.stop()
     try:
-        console.print(Panel(prompt, title="[bold yellow]Bestätigung nötig[/bold yellow]", border_style="yellow"))
+        console.print(Panel(escape(prompt), title="[bold yellow]Bestätigung nötig[/bold yellow]", border_style="yellow"))
         return _JaNein.ask("Ausführen?", default=False, console=console)
     except (EOFError, KeyboardInterrupt):
         console.print("[dim]Keine Eingabe – Aktion nicht ausgeführt.[/dim]")
@@ -158,7 +160,7 @@ def on_tool_call(call: ToolCall):
     args = json.dumps(call.arguments, ensure_ascii=False)
     if len(args) > 120:
         args = args[:117] + "..."
-    console.print(f"  [dim]⚙ {call.name} {args}[/dim]")
+    console.print(f"  [dim]⚙ {escape(call.name)} {escape(args)}[/dim]")
     orb.tool(call.name)
 
 
@@ -167,7 +169,7 @@ def on_tool_result(call: ToolCall, result: ToolResult):
     first_line = result.output.strip().splitlines()[0] if result.output.strip() else ""
     if len(first_line) > 100:
         first_line = first_line[:97] + "..."
-    console.print(f"  [dim]{icon} {first_line}[/dim]")
+    console.print(f"  [dim]{icon} {escape(first_line)}[/dim]")
 
 
 def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
@@ -184,7 +186,7 @@ def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
                 barge_in_threshold=config.BARGE_IN_THRESHOLD,
             )
     except Exception as e:
-        console.print(f"[bold red]Sprachmodus nicht verfügbar:[/bold red] {e}")
+        console.print(f"[bold red]Sprachmodus nicht verfügbar:[/bold red] {escape(str(e))}")
         console.print("[dim]Mikrofon angeschlossen? Pakete installiert (uv sync)?[/dim]")
         return False
     loop.run()
@@ -243,7 +245,7 @@ def main():
                 continue
             if cmd in ("memory", "gedächtnis", "erinnerungen"):
                 facts = agent.memory.list_facts() if agent.memory else []
-                body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{f['category']}[/cyan]  {f['content']}" for f in facts) or "[dim]Noch leer.[/dim]"
+                body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{escape(f['category'])}[/cyan]  {escape(f['content'])}" for f in facts) or "[dim]Noch leer.[/dim]"
                 console.print(Panel(body, title="[bold magenta]Gedächtnis[/bold magenta]", border_style="magenta"))
                 continue
             if cmd in ("orb", "orb an", "orb aus"):
@@ -281,7 +283,7 @@ def main():
                 console.print("[yellow]Frage abgebrochen.[/yellow]")
                 continue
 
-            console.print(Panel(response, title="[bold green]Jarvis[/bold green]", border_style="green"))
+            console.print(Panel(escape(response), title="[bold green]Jarvis[/bold green]", border_style="green"))
             if agent.last_usage.calls:
                 console.print(f"  [dim]{agent.usage_summary(agent.last_usage)}[/dim]")
             orb.transcript("assistant", response)
@@ -298,7 +300,7 @@ def main():
         except Exception as e:
             orb.error(str(e))
             orb.state("idle")
-            console.print(f"[bold red]Fehler:[/bold red] {e}")
+            console.print(f"[bold red]Fehler:[/bold red] {escape(str(e))}")
 
 
 if __name__ == "__main__":
