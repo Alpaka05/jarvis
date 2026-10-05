@@ -220,3 +220,7 @@ uv run pytest
 - [x] Obsidian-Vault: Notizen durchsuchen, lesen, anlegen, ergänzen
 - [ ] Weitere Tools: Dateisystem, Timer/Erinnerungen, Notion, Wetter-API
 - [ ] Kalender-Backends (CalDAV, Google Calendar)
+
+## Lizenz
+
+[MIT](LICENSE) – © 2026 Colin Benecke
