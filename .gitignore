@@ -44,7 +44,6 @@ venv.bak/
 
 # uv / virtualenv
 .venv/
-uv.lock
 
 # Jarvis runtime data
 data/.spotify_cache
