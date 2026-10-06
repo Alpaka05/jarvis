@@ -68,6 +68,9 @@ class JarvisAgent:
         self.tools: Dict[str, BaseTool] = {
             t.name: t for t in (tools if tools is not None else default_tools(memory=memory))
         }
+        for tool in self.tools.values():  # Tools, die Bilder auswerten lassen (screen)
+            if hasattr(tool, "use_vision"):
+                tool.use_vision(self.describe_image)
         self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.history: List[Dict[str, Any]] = []
         self.last_usage = Usage()
@@ -247,6 +250,22 @@ class JarvisAgent:
             self.memory.log_message(self.session_id, role, content)
         except Exception:
             pass
+
+    def describe_image(self, image: bytes, mime: str, prompt: str) -> str:
+        """Bild (z.B. Screenshot) vom LLM beschreiben lassen; Fallback und Kosten wie bei _chat."""
+        from tools.screen_tool import VISION_SYSTEM
+
+        if self.provider is None:
+            raise LLMError("Kein LLM-Provider verfügbar.")
+        try:
+            response = self.provider.describe_image(image, mime, prompt, VISION_SYSTEM)
+        except LLMError:
+            if self.fallback is None:
+                raise
+            response = self.fallback.describe_image(image, mime, prompt, VISION_SYSTEM)
+        self.last_usage = self.last_usage.add(response.usage)
+        self.session_usage = self.session_usage.add(response.usage)
+        return response.text
 
     def _chat(self, system: str, schemas: List[Dict[str, Any]]) -> LLMResponse:
         assert self.provider is not None

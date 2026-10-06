@@ -8,11 +8,17 @@ Verlauf (history) ist eine Liste von dicts:
     {"role": "assistant", "content": "...", "tool_calls": [ToolCall-dicts], "_raw": {...}}
     {"role": "tool", "tool_call_id": "...", "name": "...", "content": "...", "is_error": bool}
 
+Für Einzelaufrufe mit Bild (describe_image, z.B. Screenshot) darf `content` einer Nutzernachricht
+auch eine Liste von Teilen sein – im Gesprächsverlauf stehen nur Texte:
+    {"role": "user", "content": [{"type": "image", "mime": "image/jpeg", "data": b"..."},
+                                 {"type": "text", "text": "..."}]}
+
 `_raw` enthält providerspezifische Rohdaten (z.B. Anthropic-Content-Blöcke inkl.
 Thinking), damit der gleiche Provider sie unverändert zurückspielen kann.
 """
 from __future__ import annotations
 
+import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -91,6 +97,19 @@ class LLMProvider(ABC):
 
     def describe(self) -> str:
         return f"{self.name} ({self.model})"
+
+    def describe_image(self, image: bytes, mime: str, prompt: str, system: str = "") -> "LLMResponse":
+        """Wertet ein Bild aus (z.B. einen Screenshot) und beantwortet `prompt` dazu – ohne Tools,
+        ohne Gesprächsverlauf. Nutzt chat(), damit Rotation, Fehler und Kosten wie gewohnt laufen."""
+        message = {
+            "role": "user",
+            "content": [{"type": "image", "mime": mime, "data": image}, {"type": "text", "text": prompt}],
+        }
+        return self.chat(system, [message], [])
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
 
 
 def group_tool_results(messages: List[Dict[str, Any]]):

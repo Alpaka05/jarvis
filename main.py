@@ -165,8 +165,10 @@ def on_tool_call(call: ToolCall):
     args = json.dumps(call.arguments, ensure_ascii=False)
     if len(args) > 120:
         args = args[:117] + "..."
+    if call.name == "screen":  # gut sichtbar: Jarvis schaut gerade auf den Bildschirm
+        console.print("  [bold cyan]📸 Schaue auf deinen Bildschirm …[/bold cyan]")
     console.print(f"  [dim]⚙ {escape(call.name)} {escape(args)}[/dim]")
-    orb.tool(call.name)
+    orb.tool("Bildschirm" if call.name == "screen" else call.name)
 
 
 def on_tool_result(call: ToolCall, result: ToolResult):

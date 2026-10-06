@@ -31,9 +31,10 @@ core/voice.py           Sprachausgabe: satzweise Edge-TTS-Pipeline, Wiedergabe i
 core/voice_input.py     Spracheingabe (Silero-VAD → Google Speech Recognition)
 core/wakeword.py        Wake-Word „Hey Jarvis“ (openWakeWord, lokal)
 core/voice_loop.py      Sprachmodus: lauschen, bestätigen, aufnehmen, antworten, Nachfrage-Fenster
+core/screen.py          Screenshot des Bildschirms unter der Maus (für das screen-Tool)
 core/orb.py             Ereignisse für das Orb-Overlay (Zustand, Pegel, Tools) per WebSocket auf 127.0.0.1
 tools/                  Tools mit JSON-Schema – das LLM wählt Tool und Argumente selbst
-  memory, system, calendar, homeassistant, spotify, mail, web_search (search/news/read_url), browser, obsidian
+  memory, system, calendar, homeassistant, spotify, mail, web_search (search/news/read_url), browser, obsidian, screen
 tests/                  pytest (Agent-Loop, Provider-Konvertierung, Tools)
 ```
 
@@ -113,6 +114,7 @@ uv run playwright install chromium
 | `TTS_ENGINE`, `EDGE_VOICE`, `EDGE_RATE`, `EDGE_PITCH` | Sprachausgabe: `edge` (neuronal, online) oder `system` (offline) |
 | `VOICE_MODE_ON_START`, `WAKE_WORD_THRESHOLD`, `FOLLOW_UP_SECONDS`, `ACK_STYLE`, `ACK_PHRASE` | Sprachmodus: Autostart, Empfindlichkeit, Nachfrage-Fenster, Bestätigung (Chime und/oder gesprochenes „Ja?“) |
 | `TTS_ENABLED`, `VOICE_NAME`, `LANGUAGE` | Sprachausgabe an/aus, Systemstimme, Sprache |
+| `SCREEN_ENABLED` | `true` (Standard): Jarvis darf auf Nachfrage einen Screenshot machen und ans LLM schicken |
 | `ORB_ENABLED`, `ORB_PORT` | Ereignis-Server für das Orb-Overlay schon beim Start (sonst erst mit `orb`), Port Standard 8765 |
 
 ### Spotify
@@ -218,6 +220,21 @@ sonst könnte jede Webseite im Browser mitlesen. Die Ereignisse:
 
 Ein neu verbundenes Fenster bekommt sofort den aktuellen Zustand. Ohne verbundenes Fenster
 läuft Jarvis unverändert weiter.
+
+### Bildschirm
+
+„Hey Jarvis, was bedeutet der Fehler auf meinem Bildschirm?“ oder „Was siehst du gerade?“: Jarvis
+macht dann einen Screenshot des Bildschirms, auf dem die Maus steht, verkleinert ihn und lässt ihn
+vom LLM beschreiben. Im Terminal erscheint „📸 Schaue auf deinen Bildschirm …“, der Orb zeigt
+„Bildschirm“. Jarvis schaut nur hin, wenn du danach fragst.
+
+- **macOS** fragt beim ersten Mal nach der Berechtigung „Bildschirm- und Systemaudioaufnahme“ für
+  die App, in der Jarvis läuft (z.B. Terminal) – freigeben und die App neu starten.
+- **Datenschutz:** Der Screenshot geht an den KI-Anbieter (bei Gemini in der kostenlosen Stufe darf
+  Google Inhalte laut Nutzungsbedingungen auch zur Verbesserung nutzen). Ins Gesprächsprotokoll
+  kommt nur die Textbeschreibung, nicht das Bild. Abschalten: `SCREEN_ENABLED=false`.
+- Was auf dem Bildschirm steht, gilt wie Webseiten und Mails als fremder Inhalt – danach fragt
+  Jarvis vor „vorsichtigen“ Aktionen nach (siehe [Rückfragen](#rückfragen-und-prompt-injection)).
 
 ### Fehlersuche
 
