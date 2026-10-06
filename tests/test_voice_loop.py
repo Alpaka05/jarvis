@@ -1,4 +1,6 @@
 """Verdrahtungstest des Sprachmodus mit Fake-Mikrofon, Fake-Detektor und Fake-Agent."""
+import io
+
 import numpy as np
 from rich.console import Console
 
@@ -253,7 +255,7 @@ def _confirm_loop(monkeypatch, answer):
     listener.recognize = lambda recording: answer
     voice = FakeVoice()
     loop = VoiceLoop.__new__(VoiceLoop)
-    loop.console = Console(file=open("/dev/null", "w"))
+    loop.console = Console(file=io.StringIO())
     loop.listener, loop.voice = listener, voice
     loop._stream = FakeStream([])
     return loop, voice, UNTRUSTED_NOTE
