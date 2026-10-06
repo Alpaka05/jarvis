@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 
 from rich.console import Console
@@ -9,6 +10,7 @@ from rich.prompt import Confirm, InvalidResponse, Prompt
 from config import config
 from core import orb, platform_utils
 from core.agent import JarvisAgent
+from core.log import rotate_native_log, setup_logging
 from core.llm import ToolCall
 from core.voice import VoiceEngine
 from tools.base import ToolResult
@@ -21,10 +23,13 @@ if sys.platform.startswith("win"):
         except Exception:
             pass
 
+LOG_PATH = setup_logging(config.DATA_DIR)
+log = logging.getLogger("jarvis")
+
 # PortAudio (PaMacCore) schreibt bei veralteter Geräteliste Warnungen direkt auf fd 1/2 –
-# dauerhaft stumm schalten, Pythons eigene Ausgaben bleiben sichtbar.
+# dauerhaft in data/native.log umleiten, Pythons eigene Ausgaben bleiben sichtbar.
 if sys.platform == "darwin":
-    platform_utils.silence_native_output()
+    platform_utils.silence_native_output(str(rotate_native_log(config.DATA_DIR)))
 
 console = Console()
 
@@ -211,9 +216,14 @@ def main():
             agent.notes.append(orb_error)
     voice_listener = None  # wird bei Bedarf geladen (Mikrofon-Bibliotheken)
 
+    log.info("Jarvis gestartet (%s, LLM: %s)", config.platform_name, agent.provider.describe() if agent.provider else "keins")
     print_status(agent, voice)
     if voice_mode:
-        run_voice_mode(agent, voice)
+        try:
+            run_voice_mode(agent, voice)
+        except Exception as e:  # sonst beendet ein Fehler im Sprachmodus beim Start ganz Jarvis
+            log.exception("Sprachmodus beim Start abgebrochen")
+            console.print(f"[bold red]Sprachmodus abgebrochen:[/bold red] {escape(str(e))}")
     console.print("[dim]Befehl eingeben, 'wake' für den Sprachmodus, 'v' für eine Spracheingabe, 'hilfe', 'exit'.[/dim]\n")
 
     while True:
@@ -300,9 +310,10 @@ def main():
             console.print("\n[bold yellow]Abgebrochen. Bis später![/bold yellow]")
             sys.exit(0)
         except Exception as e:
-            orb.error(str(e))
+            log.exception("Unerwarteter Fehler in der Hauptschleife")
+            orb.error(str(e)[:120])
             orb.state("idle")
-            console.print(f"[bold red]Fehler:[/bold red] {escape(str(e))}")
+            console.print(f"[bold red]Fehler:[/bold red] {escape(str(e))} [dim](Details in {LOG_PATH})[/dim]")
 
 
 if __name__ == "__main__":

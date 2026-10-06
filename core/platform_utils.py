@@ -6,7 +6,9 @@ wird hier für Windows, macOS und Linux bereitgestellt.
 from __future__ import annotations
 
 import contextlib
+import faulthandler
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -16,6 +18,8 @@ import webbrowser
 from typing import Optional
 
 from config import config, IS_WINDOWS, IS_MAC, IS_LINUX
+
+log = logging.getLogger(__name__)
 
 # ── Windows helpers ─────────────────────────────────────────────────────────
 
@@ -107,14 +111,15 @@ _stderr_lock = threading.RLock()
 _native_stderr_silenced = False
 
 
-def silence_native_output() -> bool:
-    """Leitet die Dateideskriptoren 1 und 2 dauerhaft nach /dev/null; Pythons sys.stdout und
-    sys.stderr schreiben weiter ins Terminal.
+def silence_native_output(log_path: Optional[str] = None) -> bool:
+    """Leitet die Dateideskriptoren 1 und 2 dauerhaft in `log_path` um (ohne Pfad: /dev/null);
+    Pythons sys.stdout und sys.stderr schreiben weiter ins Terminal.
 
     C-Bibliotheken schreiben direkt auf die Deskriptoren – PortAudio (PaMacCore) etwa per printf
-    auf stdout, onnxruntime auf stderr – und kommen so nicht mehr durch. Python-Ausgaben, rich und
-    Tracebacks bleiben sichtbar. Kindprozesse erben die stummen Deskriptoren. Einmal pro Prozess,
-    idempotent.
+    auf stdout, onnxruntime auf stderr – und landen so in der Logdatei statt im Terminal. Dort
+    bleiben auch Absturzmeldungen („Fatal Python error“, Segfault) nachlesbar. Python-Ausgaben,
+    rich und Tracebacks bleiben sichtbar; faulthandler schreibt Python-Stacks bei einem Absturz
+    ins Terminal. Kindprozesse erben die umgeleiteten Deskriptoren. Einmal pro Prozess, idempotent.
     """
     global _native_stderr_silenced
     with _stderr_lock:
@@ -122,19 +127,22 @@ def silence_native_output() -> bool:
             return True
         try:
             replaced = []
+            target = log_path or os.devnull
             for name in ("stdout", "stderr"):
                 stream = getattr(sys, name)
                 stream.flush()
                 fd = stream.fileno()
                 real = os.dup(fd)
-                devnull = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(devnull, fd)
-                os.close(devnull)
+                sink = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                os.dup2(sink, fd)
+                os.close(sink)
                 encoding = getattr(stream, "encoding", None) or "utf-8"
                 replaced.append((name, os.fdopen(real, "w", encoding=encoding, errors="replace", buffering=1)))
             for name, stream in replaced:
                 setattr(sys, name, stream)
+            faulthandler.enable(file=sys.stderr)  # Python-Stack bei Segfault/Abbruch ins Terminal
         except Exception:
+            log.warning("Native Ausgaben konnten nicht umgeleitet werden", exc_info=True)
             return False
         _native_stderr_silenced = True
         return True
@@ -185,7 +193,7 @@ def refresh_audio_devices() -> None:
             sd._terminate()
             sd._initialize()
     except Exception:
-        pass
+        log.warning("PortAudio-Geräteliste konnte nicht aufgefrischt werden", exc_info=True)
     _output_device_cache.clear()
     _device_signature = audio_device_signature()
 
@@ -272,6 +280,7 @@ def open_audio_stream(factory):
         except Exception:
             if _open_streams != 0:
                 raise
+            log.info("Audio-Stream ließ sich nicht öffnen – Geräteliste auffrischen und erneut versuchen", exc_info=True)
             refresh_audio_devices()
             with quiet_stderr():
                 stream = factory().__enter__()
@@ -279,10 +288,16 @@ def open_audio_stream(factory):
     try:
         yield stream
     finally:
-        with _audio_lock:
-            _open_streams -= 1
-        with quiet_stderr():
-            stream.__exit__(None, None, None)  # stop + close
+        # Erst schließen, dann zählen: Sähe ein anderer Thread vorher 0, würde er PortAudio neu
+        # initialisieren (refresh_audio_devices), während dieser Stream noch stoppt
+        try:
+            with quiet_stderr():
+                stream.__exit__(None, None, None)  # stop + close
+        except Exception:
+            log.warning("Audio-Stream ließ sich nicht sauber schließen", exc_info=True)
+        finally:
+            with _audio_lock:
+                _open_streams -= 1
 
 
 def play_audio(samples, sample_rate: int, device=None) -> None:
@@ -316,15 +331,17 @@ def output_sample_rate(device=None) -> Optional[int]:
     if not IS_MAC:
         return None
     key = f"rate:{device}"
-    if key not in _output_device_cache:
-        try:
-            import sounddevice as sd
+    with _audio_lock:  # nicht parallel zu refresh_audio_devices() abfragen
+        if key not in _output_device_cache:
+            try:
+                import sounddevice as sd
 
-            rate = int(sd.query_devices(device, "output")["default_samplerate"])
-        except Exception:
-            rate = None
-        _output_device_cache[key] = rate or None
-    return _output_device_cache[key]
+                rate = int(sd.query_devices(device, "output")["default_samplerate"])
+            except Exception:
+                log.debug("Abtastrate von Ausgabegerät %r nicht abfragbar", device, exc_info=True)
+                return None  # nicht merken: beim nächsten Mal erneut versuchen
+            _output_device_cache[key] = rate or None
+        return _output_device_cache[key]
 
 
 def resample(samples, src_rate: int, dst_rate: int):

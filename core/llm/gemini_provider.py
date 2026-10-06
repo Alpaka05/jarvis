@@ -1,11 +1,14 @@
 """Google Gemini Provider – nutzt das `google-genai` SDK mit Function Calling."""
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
 
 from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
+
+log = logging.getLogger(__name__)
 
 
 class GeminiProvider(LLMProvider):
@@ -136,11 +139,13 @@ class GeminiProvider(LLMProvider):
                 if self._is_rate_limited(text):
                     wait = self._retry_seconds(text)
                     self._cooldown_until[model] = time.time() + wait
+                    log.info("Gemini %s ausgelastet, Pause %.0f s: %s", model, wait, text[:200])
                     errors.append(f"{model}: ausgelastet oder Kontingent erschöpft, wieder in {int(wait)} s")
                     continue
                 if self._is_unknown_model(text):
                     # Für diese Sitzung aus der Rotation nehmen, statt die übrigen Modelle gar nicht zu versuchen
                     self._cooldown_until[model] = float("inf")
+                    log.warning("Gemini-Modell %s nicht verfügbar, für diese Sitzung übersprungen: %s", model, text[:200])
                     errors.append(f"{model}: gibt es nicht (mehr) – GEMINI_FALLBACK_MODELS anpassen")
                     continue
                 raise LLMError(f"Gemini ({model}): {text[:300]}") from e

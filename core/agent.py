@@ -9,6 +9,8 @@ Ablauf pro Anfrage:
 from __future__ import annotations
 
 import json
+import logging
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -17,6 +19,8 @@ from core.llm import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, create
 from core.memory import MemoryStore
 from tools import default_tools
 from tools.base import BaseTool, Policy, Risk, ToolResult
+
+log = logging.getLogger(__name__)
 
 WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 
@@ -39,6 +43,7 @@ class JarvisAgent:
     MAX_HISTORY = 60       # Nachrichten im Verlauf, bevor alte Runden verworfen werden
     MAX_TOOL_OUTPUT = 6000 # Zeichen pro Tool-Ergebnis, die ans LLM gehen
     TOOL_TIMEOUT = 45.0    # Sekunden, die ein einzelner Tool-Aufruf höchstens dauern darf
+    FALLBACK_STICKY_SECONDS = 300.0  # nach einem Ausfall so lange direkt den Ersatz-Provider nutzen
 
     def __init__(
         self,
@@ -71,6 +76,7 @@ class JarvisAgent:
         self.last_usage = Usage()
         self.session_usage = Usage()
         self.voice_mode = False  # wird vom Sprachmodus gesetzt: kürzere, vorlesbare Antworten
+        self._fallback_until = 0.0  # bis dahin direkt den Ersatz-Provider fragen (monotonic)
         self.confirm = confirm
         self.on_tool_call = on_tool_call
         self.on_tool_result = on_tool_result
@@ -263,14 +269,29 @@ class JarvisAgent:
 
     def _chat(self, system: str, schemas: List[Dict[str, Any]]) -> LLMResponse:
         assert self.provider is not None
+        # Nach einem Ausfall eine Weile beim Ersatz bleiben: Sonst wartet jeder Schritt einer Anfrage
+        # erneut auf den hängenden Haupt-Provider (bis zu Timeout × Wiederholungen)
+        if self.fallback is not None and time.monotonic() < self._fallback_until:
+            try:
+                return self.fallback.chat(system, self.history, schemas)
+            except LLMError:
+                log.warning("Ersatz-Provider %s fällt aus – versuche wieder den Haupt-Provider", self.fallback.describe(), exc_info=True)
+                self._fallback_until = 0.0
         try:
             return self.provider.chat(system, self.history, schemas)
         except LLMError as e:
+            log.warning("Provider %s nicht erreichbar: %s", self.provider.describe(), e)
             if self.fallback is None:
                 raise
+            response = self.fallback.chat(system, self.history, schemas)
+            self._fallback_until = time.monotonic() + self.FALLBACK_STICKY_SECONDS
             if self.on_notice:
-                self.on_notice(f"{self.provider.describe()} nicht erreichbar ({e}). Wechsle zu {self.fallback.describe()}.")
-            return self.fallback.chat(system, self.history, schemas)
+                minutes = int(self.FALLBACK_STICKY_SECONDS // 60)
+                self.on_notice(
+                    f"{self.provider.describe()} nicht erreichbar ({e}). Nutze die nächsten {minutes} Minuten "
+                    f"{self.fallback.describe()}."
+                )
+            return response
 
     def _append_assistant(self, response: LLMResponse):
         self.last_usage = self.last_usage.add(response.usage)
@@ -352,15 +373,21 @@ class JarvisAgent:
                     f"Ungültige Argumente für '{call.name}': {e}. Erhalten: {json.dumps(args, ensure_ascii=False)}"
                 )
             except Exception as e:
+                log.exception("Fehler in Tool %s", call.name)
                 box["result"] = ToolResult.fail(f"Fehler in Tool '{call.name}': {e}")
 
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         worker.join(self.TOOL_TIMEOUT)
         if worker.is_alive():
+            # Ein Python-Thread lässt sich nicht abbrechen: Das Tool läuft weiter und kann noch wirken
+            # (z.B. eine Mail doch senden). Deshalb nicht „abgebrochen“ melden und nicht blind wiederholen.
+            log.warning("Tool %s nach %.0f s ohne Antwort (läuft im Hintergrund weiter)", call.name, self.TOOL_TIMEOUT)
             return ToolResult.fail(
-                f"Tool '{call.name}' hat nach {int(self.TOOL_TIMEOUT)} Sekunden nicht geantwortet und wurde abgebrochen. "
-                "Bitte dem Nutzer kurz sagen, dass die Quelle nicht erreichbar war, oder eine andere Quelle versuchen."
+                f"Tool '{call.name}' hat nach {int(self.TOOL_TIMEOUT)} Sekunden nicht geantwortet und läuft eventuell "
+                "im Hintergrund weiter. Aktionen mit Außenwirkung (senden, schalten, speichern) NICHT wiederholen – "
+                "sag dem Nutzer, dass unklar ist, ob sie ausgeführt wurden. Bei reinen Abfragen kannst du eine andere "
+                "Quelle versuchen."
             )
         return box.get("result") or ToolResult.fail(f"Tool '{call.name}' lieferte kein Ergebnis.")
 

@@ -236,6 +236,16 @@ vom LLM beschreiben. Im Terminal erscheint „📸 Schaue auf deinen Bildschirm 
 - Was auf dem Bildschirm steht, gilt wie Webseiten und Mails als fremder Inhalt – danach fragt
   Jarvis vor „vorsichtigen“ Aktionen nach (siehe [Rückfragen](#rückfragen-und-prompt-injection)).
 
+### Fehlersuche
+
+Im Terminal erscheinen Fehler nur kurz; Details mit Traceback stehen in `data/jarvis.log`
+(rotiert, max. 3 × 1 MB). Meldungen von C-Bibliotheken wie PortAudio oder onnxruntime landen unter
+macOS in `data/native.log` – auch die letzten Worte, falls Jarvis einmal abstürzt (die vorige
+Sitzung bleibt als `native.log.1` erhalten). Fällt das Mikrofon im Sprachmodus aus (abgezogen,
+von macOS abgebrochen), öffnet Jarvis es selbst neu; nach fünf Fehlschlägen in Folge endet der
+Sprachmodus mit einer Meldung. Ist der KI-Dienst nicht erreichbar, nutzt Jarvis für fünf Minuten
+den Ersatz-Provider (`LLM_FALLBACK_PROVIDER`).
+
 ## Tests
 
 ```bash
