@@ -9,12 +9,35 @@ env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 
-def _env(name: str, default: str = "") -> str:
-    """Read an env var, treating placeholder values from .env.example as empty."""
-    value = os.getenv(name, default).strip()
+def _env(name: str, default: str = "", allow_empty: bool = False) -> str:
+    """Liest eine Umgebungsvariable. Leere Werte (`KEY=`) und Platzhalter aus .env.example
+    zählen als nicht gesetzt – sonst überschriebe z.B. `ANTHROPIC_MODEL=` den Standard mit "".
+    Mit allow_empty bedeutet ein gesetzter, leerer Wert bewusst „nichts“ (z.B. keine Rotation)."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
     if value.startswith("your_") and value.endswith("_here"):
         return default
-    return value
+    return value if (value or allow_empty) else default
+
+
+def _number(name: str, default: str, kind: type):
+    raw = _env(name, default)
+    try:
+        return kind(raw.replace(",", ".") if kind is float else raw)
+    except ValueError:
+        # Klare Meldung statt Traceback beim Start
+        expected = "eine ganze Zahl" if kind is int else "eine Zahl (z.B. 0.5)"
+        raise SystemExit(f"Konfigurationsfehler in .env: {name}={raw!r} – erwartet wird {expected}.") from None
+
+
+def _int(name: str, default: str) -> int:
+    return _number(name, default, int)
+
+
+def _float(name: str, default: str) -> float:
+    return _number(name, default, float)
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -42,7 +65,7 @@ class Config:
     GEMINI_API_KEY: str = _env("GEMINI_API_KEY")
     GEMINI_MODEL: str = _env("GEMINI_MODEL", "gemini-3.6-flash")
     # Weitere Modelle, auf die bei erschöpftem Minuten-Kontingent rotiert wird (jedes Modell hat ein eigenes)
-    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash-lite")
+    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash-lite", allow_empty=True)
 
     OLLAMA_HOST: str = _env("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL: str = _env("OLLAMA_MODEL", "llama3.1:8b")
@@ -59,9 +82,9 @@ class Config:
     EMAIL_ACCOUNT: str = _env("EMAIL_ACCOUNT")
     EMAIL_PASSWORD: str = _env("EMAIL_PASSWORD")
     IMAP_SERVER: str = _env("IMAP_SERVER")
-    IMAP_PORT: int = int(_env("IMAP_PORT", "993"))
+    IMAP_PORT: int = _int("IMAP_PORT", "993")
     SMTP_SERVER: str = _env("SMTP_SERVER")
-    SMTP_PORT: int = int(_env("SMTP_PORT", "587"))
+    SMTP_PORT: int = _int("SMTP_PORT", "587")
 
     # ── Websuche ─────────────────────────────────────────────────────────────
     TAVILY_API_KEY: str = _env("TAVILY_API_KEY")  # optional; ohne Key wird ddgs genutzt
@@ -78,7 +101,7 @@ class Config:
     # ── Daten & Gedächtnis ───────────────────────────────────────────────────
     DATA_DIR: Path = Path(__file__).parent / "data"
     MEMORY_DB: Path = Path(_env("MEMORY_DB") or (Path(__file__).parent / "data" / "jarvis.db"))
-    MEMORY_MAX_FACTS: int = int(_env("MEMORY_MAX_FACTS", "60"))  # Fakten, die in den System-Prompt wandern
+    MEMORY_MAX_FACTS: int = _int("MEMORY_MAX_FACTS", "60")  # Fakten, die in den System-Prompt wandern
 
     # ── Sprache ──────────────────────────────────────────────────────────────
     TTS_ENABLED: bool = _bool("TTS_ENABLED", True)
@@ -93,17 +116,17 @@ class Config:
     # ── Sprachmodus (Wake-Word) ──────────────────────────────────────────────
     VOICE_MODE_ON_START: bool = _bool("VOICE_MODE_ON_START", False)
     WAKE_WORD_MODEL: str = _env("WAKE_WORD_MODEL", "hey_jarvis")
-    WAKE_WORD_THRESHOLD: float = float(_env("WAKE_WORD_THRESHOLD", "0.5"))
-    FOLLOW_UP_SECONDS: float = float(_env("FOLLOW_UP_SECONDS", "6"))
+    WAKE_WORD_THRESHOLD: float = _float("WAKE_WORD_THRESHOLD", "0.5")
+    FOLLOW_UP_SECONDS: float = _float("FOLLOW_UP_SECONDS", "6")
     ACK_STYLE: str = _env("ACK_STYLE", "both").lower()  # chime | voice | both
-    ACK_PHRASE: str = _env("ACK_PHRASE", "Ja?")
-    BARGE_IN_THRESHOLD: float = float(_env("BARGE_IN_THRESHOLD", "0.06"))
-    SILENCE_LIMIT_SECONDS: float = float(_env("SILENCE_LIMIT_SECONDS", "1.4"))  # Pause, die den Satz beendet
-    VAD_THRESHOLD: float = float(_env("VAD_THRESHOLD", "0.5"))  # Silero-VAD: ab wann gilt ein Block als Sprache
+    ACK_PHRASE: str = _env("ACK_PHRASE", "Ja?", allow_empty=True)
+    BARGE_IN_THRESHOLD: float = _float("BARGE_IN_THRESHOLD", "0.06")
+    SILENCE_LIMIT_SECONDS: float = _float("SILENCE_LIMIT_SECONDS", "1.4")  # Pause, die den Satz beendet
+    VAD_THRESHOLD: float = _float("VAD_THRESHOLD", "0.5")  # Silero-VAD: ab wann gilt ein Block als Sprache
 
     # ── Orb (schwebendes Overlay) ────────────────────────────────────────────
     ORB_ENABLED: bool = _bool("ORB_ENABLED", False)  # WebSocket-Server für das Orb-Fenster starten
-    ORB_PORT: int = int(_env("ORB_PORT", "8765"))  # lauscht nur auf 127.0.0.1
+    ORB_PORT: int = _int("ORB_PORT", "8765")  # lauscht nur auf 127.0.0.1
 
     # ─── Bildschirm ──────────────────────────────────────────────────────
     SCREEN_ENABLED: bool = _bool("SCREEN_ENABLED", True)  # screen-Tool: Screenshot auf Nachfrage ans LLM
