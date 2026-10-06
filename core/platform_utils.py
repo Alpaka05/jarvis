@@ -17,7 +17,7 @@ import threading
 import webbrowser
 from typing import Optional
 
-from config import config, IS_WINDOWS, IS_MAC, IS_LINUX
+from config import IS_LINUX, IS_MAC, IS_WINDOWS, config
 
 log = logging.getLogger(__name__)
 

@@ -165,10 +165,10 @@ class VoiceLoop:
                 border_style="green",
             )
         )
-        setattr(self.agent, "voice_mode", True)
+        self.agent.voice_mode = True
         # Rückfragen (Mail senden, Türschloss …) per Sprache statt über die Tastatur
         keyboard_confirm = getattr(self.agent, "confirm", None)
-        setattr(self.agent, "confirm", self._confirm_by_voice)
+        self.agent.confirm = self._confirm_by_voice
         orb.state("idle")
         failures = 0
         try:
@@ -201,9 +201,9 @@ class VoiceLoop:
         finally:
             self.running = False
             self.voice.stop()
-            setattr(self.agent, "confirm", keyboard_confirm)
+            self.agent.confirm = keyboard_confirm
             self._stream = None
-            setattr(self.agent, "voice_mode", False)
+            self.agent.voice_mode = False
             orb.state("idle")
 
     def stop(self):
@@ -353,7 +353,7 @@ class VoiceLoop:
     }
     CLOSING_FILLER = {
         "jarvis", "das", "war", "es", "wäre", "alles", "schon", "gut", "sehr", "schön", "vielen", "lieben",
-        "herzlichen", "dir", "ok", "okay", "alles", "klar", "super", "perfekt", "top", "prima", "toll",
+        "herzlichen", "dir", "ok", "okay", "klar", "super", "perfekt", "top", "prima", "toll",
         "cool", "genau", "dann", "bis", "später", "erstmal", "erst", "mal", "mehr", "sonst", "weiter",
         "ja", "danke", "nochmal", "auch", "so", "und", "ich", "brauche", "brauch", "wir", "sind",
     }

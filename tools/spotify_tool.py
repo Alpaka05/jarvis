@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from typing import Any, Dict, Optional
 
-from config import config, IS_MAC
+from config import IS_MAC, config
 from tools.base import BaseTool, ToolResult
 
 SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing"

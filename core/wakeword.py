@@ -6,7 +6,6 @@ Das vortrainierte Modell "hey_jarvis" reagiert auf „Hey Jarvis“. Audio wird 
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 import numpy as np
 

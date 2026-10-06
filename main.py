@@ -10,8 +10,8 @@ from rich.prompt import Confirm, InvalidResponse, Prompt
 from config import config
 from core import orb, platform_utils
 from core.agent import JarvisAgent
-from core.log import rotate_native_log, setup_logging
 from core.llm import ToolCall
+from core.log import rotate_native_log, setup_logging
 from core.voice import VoiceEngine
 from tools.base import ToolResult
 
@@ -67,14 +67,14 @@ def print_status(agent: JarvisAgent, voice: VoiceEngine):
     orb_off = "aus [dim](tippe 'orb')[/dim]"
     rows = [
         f"🤖 [bold yellow]LLM:[/bold yellow] {llm_line}",
-        f"📅 [bold yellow]Kalender:[/bold yellow] [green]lokal[/green]",
+        "📅 [bold yellow]Kalender:[/bold yellow] [green]lokal[/green]",
         f"🏠 [bold yellow]Home Assistant:[/bold yellow] {_yes_no(bool(config.HA_TOKEN), config.HA_URL, 'HA_TOKEN fehlt')}",
         f"✉️  [bold yellow]E-Mail:[/bold yellow] {_yes_no(bool(config.EMAIL_ACCOUNT), config.EMAIL_ACCOUNT, 'nicht konfiguriert')}",
         f"🎵 [bold yellow]Spotify:[/bold yellow] {_yes_no(spotify_backend != 'none', spotify_label, spotify_label)}",
-        f"🔍 [bold yellow]Websuche:[/bold yellow] [green]DuckDuckGo[/green]",
+        "🔍 [bold yellow]Websuche:[/bold yellow] [green]DuckDuckGo[/green]",
         f"🧠 [bold yellow]Gedächtnis:[/bold yellow] [green]{agent.memory.count_facts() if agent.memory else 0} Fakten[/green] [dim]({config.MEMORY_DB.name}, tippe 'memory')[/dim]",
         f"🔊 [bold yellow]Sprachausgabe:[/bold yellow] {_yes_no(voice.enabled, voice.label, 'deaktiviert')}",
-        f"🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
+        "🎤 [bold yellow]Sprachmodus:[/bold yellow] [green]Wake-Word „Hey Jarvis“[/green] [dim](tippe 'wake' oder VOICE_MODE_ON_START=true)[/dim]",
         f"🔮 [bold yellow]Orb:[/bold yellow] {_yes_no(orb.bus.enabled, orb.bus.address, orb_off)}",
     ]
     for note in agent.notes:

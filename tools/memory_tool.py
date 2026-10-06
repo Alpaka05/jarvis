@@ -1,4 +1,3 @@
-from typing import Optional
 
 from core.memory import CATEGORIES, MemoryStore
 from tools.base import BaseTool, Policy, Risk, ToolResult
