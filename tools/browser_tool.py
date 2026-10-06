@@ -5,12 +5,15 @@ browser-use ist ein optionales Extra (`uv sync --extra browser` + `playwright in
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import urllib.parse
 
 from config import config
 from core import platform_utils
 from tools.base import BaseTool, Policy, Risk, ToolResult
+
+log = logging.getLogger(__name__)
 
 
 class BrowserTool(BaseTool):
@@ -89,6 +92,7 @@ class BrowserTool(BaseTool):
                 agent = Agent(task=task, llm=llm)
                 asyncio.run(agent.run())
             except Exception as e:  # pragma: no cover
+                log.exception("browser-use-Aufgabe fehlgeschlagen")
                 print(f"\n[browser-use Fehler]: {e}")
 
         threading.Thread(target=_worker, daemon=True).start()

@@ -24,6 +24,7 @@ from __future__ import annotations
 import atexit
 import hmac
 import json
+import logging
 import math
 import os
 import queue
@@ -38,6 +39,8 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 IDLE_DELAY = 0.3
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -100,6 +103,7 @@ class OrbEvents:
             self.token = self.token or load_or_create_token(self.token_file)
             self._server = serve(self._handle, host, port, process_request=self._check_token)
         except Exception as e:  # Paket fehlt, Port belegt, …
+            log.warning("Orb-Server auf Port %s nicht gestartet: %s", port, e)
             return f"Orb-Server nicht gestartet: {e}"
         self.address = f"ws://{host}:{self._server.socket.getsockname()[1]}"
         self.enabled = True
@@ -275,19 +279,21 @@ class OrbWindow:
             detach = {"start_new_session": True}
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.log_path, "wb") as log:
+            with open(self.log_path, "wb") as log_file:
                 # stdin bleibt offen und ist die Lebensader: endet Jarvis – auch per Absturz oder
                 # kill -9 –, sieht der Orb EOF und beendet sich selbst.
                 self._proc = subprocess.Popen(
-                    [str(binary)], env=env, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, **detach
+                    [str(binary)], env=env, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, **detach
                 )
         except OSError as e:
             return False, f"Orb-Fenster konnte nicht gestartet werden: {e}"
         try:
             code = self._proc.wait(timeout=STARTUP_CHECK_SECONDS)
         except subprocess.TimeoutExpired:
+            log.info("Orb-Fenster gestartet (pid %s, Port %s)", self._proc.pid, actual_port)
             return True, "Orb gestartet."
         self._proc = None
+        log.warning("Orb-Fenster beendete sich sofort (Code %s), siehe %s", code, self.log_path)
         return False, f"Orb-Fenster hat sich sofort beendet (Code {code}). {self._log_tail()}".strip()
 
     def _log_tail(self, lines: int = 3) -> str:

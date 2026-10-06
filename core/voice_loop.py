@@ -7,6 +7,7 @@ Ablauf:
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Callable, Optional
@@ -20,9 +21,13 @@ from rich.panel import Panel
 from config import config
 from core import orb, platform_utils
 from core.agent import UNTRUSTED_NOTE, JarvisAgent
+from core.mic import MicError, MicStream
 from core.voice import VoiceEngine
 from core.voice_input import VoiceInputListener, rms
 from core.wakeword import FRAME_SAMPLES, SAMPLE_RATE, WakeWordDetector
+
+log = logging.getLogger(__name__)
+MAX_MIC_FAILURES = 5  # so oft hintereinander darf das Mikrofon ausfallen, dann endet der Sprachmodus
 
 
 def _tone(freq: float, duration: float, volume: float) -> np.ndarray:
@@ -165,14 +170,32 @@ class VoiceLoop:
         keyboard_confirm = getattr(self.agent, "confirm", None)
         setattr(self.agent, "confirm", self._confirm_by_voice)
         orb.state("idle")
+        failures = 0
         try:
             while self.running:
-                # Bei geänderten Audiogeräten Mikrofon schließen und neu öffnen – dabei liest
-                # PortAudio die Geräteliste frisch ein (siehe platform_utils.audio_devices_changed)
-                with platform_utils.open_audio_stream(
-                    lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
-                ) as stream:
-                    self._listen(stream)
+                # Bei geänderten Audiogeräten oder einem ausgefallenen Mikrofon schließen und neu
+                # öffnen – dabei liest PortAudio die Geräteliste frisch ein
+                opened = time.monotonic()
+                try:
+                    with platform_utils.open_audio_stream(
+                        lambda: MicStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES)
+                    ) as stream:
+                        self._listen(stream)
+                    failures = 0
+                except (MicError, sd.PortAudioError) as e:
+                    if time.monotonic() - opened > 30:
+                        failures = 0  # lief eine Weile: kein Dauerproblem
+                    failures += 1
+                    log.warning("Mikrofon-Problem (%d/%d): %s", failures, MAX_MIC_FAILURES, e)
+                    self.voice.stop()
+                    orb.state("idle")
+                    if failures >= MAX_MIC_FAILURES:
+                        self.console.print(
+                            f"[bold red]Mikrofon nicht verfügbar[/bold red] ({escape(str(e))}) – Sprachmodus beendet."
+                        )
+                        break
+                    self.console.print(f"[yellow]Mikrofon-Problem ({escape(str(e))}) – öffne es neu …[/yellow]")
+                    time.sleep(min(failures, 3))
         except KeyboardInterrupt:
             pass
         finally:
@@ -296,12 +319,11 @@ class VoiceLoop:
         self.voice.speak(question, listen_for_interrupt=False, block=True)
         # Was sich während Denken und Vorlesen im Puffer gesammelt hat (inkl. Echo), verwerfen
         try:
-            pending = int(getattr(stream, "read_available", 0) or 0)
-            if pending:
-                stream.read(pending)
-            stream.read(int(SAMPLE_RATE * 0.25))
-        except Exception:
-            pass
+            if hasattr(stream, "flush"):
+                stream.flush()
+            stream.read(int(SAMPLE_RATE * 0.25))  # Nachhall
+        except MicError:
+            return False
         orb.state("listening")
         recording = self.listener.record_from_stream(stream, start_timeout=6.0)
         orb.state("thinking")

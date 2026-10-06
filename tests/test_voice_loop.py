@@ -91,7 +91,7 @@ class FakeAgent:
 def test_voice_loop_wake_record_answer_and_stop(monkeypatch):
     frames = [np.zeros((FRAME_SAMPLES, 1), dtype=np.int16) for _ in range(5)]
     stream = FakeStream(frames)
-    monkeypatch.setattr(voice_loop_module.sd, "InputStream", lambda **kw: stream)
+    monkeypatch.setattr(voice_loop_module, "MicStream", lambda **kw: stream)
     monkeypatch.setattr(voice_loop_module, "play_beep", lambda *a, **k: None)
     monkeypatch.setattr(voice_loop_module, "play_chime", lambda *a, **k: None)
 
@@ -184,7 +184,7 @@ def test_text_mode_requests():
 
 def test_text_mode_request_leaves_voice_mode_without_agent(monkeypatch):
     stream = FakeStream([np.zeros((FRAME_SAMPLES, 1), dtype=np.int16) for _ in range(5)])
-    monkeypatch.setattr(voice_loop_module.sd, "InputStream", lambda **kw: stream)
+    monkeypatch.setattr(voice_loop_module, "MicStream", lambda **kw: stream)
     monkeypatch.setattr(voice_loop_module, "play_chime", lambda *a, **k: None)
     monkeypatch.setattr(voice_loop_module, "AckVoice", lambda phrase: type("A", (), {"path": None, "play": lambda self, wait=True: None})())
     monkeypatch.setattr(voice_loop_module, "orb", OrbRecorder())
@@ -211,7 +211,7 @@ def test_mic_stream_is_reopened_when_audio_devices_change(monkeypatch):
         opened.append(kw)
         return FakeStream([np.zeros((FRAME_SAMPLES, 1), dtype=np.int16) for _ in range(5)])
 
-    monkeypatch.setattr(voice_loop_module.sd, "InputStream", new_stream)
+    monkeypatch.setattr(voice_loop_module, "MicStream", new_stream)
     monkeypatch.setattr(voice_loop_module, "orb", OrbRecorder())
     checks = {"n": 0}
 

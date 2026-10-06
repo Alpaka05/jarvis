@@ -130,7 +130,7 @@ def test_fallback_provider_used_when_primary_fails():
     notices = []
     agent = JarvisAgent(provider=FailingProvider(), fallback=fallback, tools=[], on_notice=notices.append)
     assert agent.process_query("hi") == "vom fallback"
-    assert notices and "Wechsle" in notices[0]
+    assert notices and "Nutze die nächsten 5 Minuten" in notices[0]
 
 
 def test_llm_error_without_fallback_rolls_back_history():

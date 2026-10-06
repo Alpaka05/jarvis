@@ -11,6 +11,7 @@ geöffneten Stream mitbenutzen (Sprachmodus mit Wake-Word).
 from __future__ import annotations
 
 import io
+import logging
 import wave
 from typing import Optional
 
@@ -22,6 +23,7 @@ from rich.console import Console
 from core import orb, platform_utils
 
 console = Console()
+log = logging.getLogger(__name__)
 
 VAD_FRAME = 480  # 30 ms @ 16 kHz, vom Silero-VAD erwartet
 STT_TIMEOUT_SECONDS = 8  # Google-Spracherkennung: Netz-Timeout pro Anfrage
@@ -181,12 +183,15 @@ class VoiceInputListener:
         except sr.UnknownValueError:
             return ""
         except sr.RequestError as e:
+            log.warning("Spracherkennung nicht erreichbar: %s", e)
             console.print(f"[bold red]Spracherkennung nicht erreichbar:[/bold red] {e}")
             return ""
         except TimeoutError:
+            log.warning("Spracherkennung: keine Antwort nach %s s", STT_TIMEOUT_SECONDS)
             console.print(f"[bold red]Spracherkennung antwortet nicht[/bold red] (> {STT_TIMEOUT_SECONDS} s).")
             return ""
         except OSError as e:  # z.B. FLAC-Konverter fehlt oder läuft nicht (Apple Silicon: brew install flac)
+            log.warning("Spracherkennung fehlgeschlagen", exc_info=True)
             console.print(f"[bold red]Spracherkennung fehlgeschlagen:[/bold red] {e}")
             return ""
 
