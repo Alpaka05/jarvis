@@ -10,10 +10,9 @@ from core.agent import JarvisAgent
 from core.llm.anthropic_provider import AnthropicProvider
 from core.llm.base import LLMResponse, ToolCall, Usage
 from core.llm.openai_provider import OpenAICompatProvider
-from tools.base import Risk
-from tools.screen_tool import ScreenTool, VISION_SYSTEM
-
 from tests.test_agent import FakeProvider
+from tools.base import Risk
+from tools.screen_tool import VISION_SYSTEM, ScreenTool
 
 MONITORS = [
     {"left": 0, "top": 0, "width": 4480, "height": 1440},  # 0 = alle zusammen

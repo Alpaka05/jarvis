@@ -104,6 +104,7 @@ uv run playwright install chromium
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude, Standardmodell `claude-sonnet-5` (Opus 5 ist ~2,5× teurer) |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini, Standard `gemini-3.6-flash` (kostenloses Kontingent über [AI Studio](https://aistudio.google.com)) |
+| `GEMINI_FALLBACK_MODELS` | weitere Gemini-Modelle, auf die Jarvis bei erschöpftem Kontingent ausweicht (leer = keine) |
 | `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
 | `USER_NAME`, `SALUTATION` | dein Name; Anrede am Anfang jeder Antwort (z.B. `Sir`) |
 | `TAVILY_API_KEY` | optional: bessere Websuche über Tavily, sonst kostenlose ddgs-Metasuche |
@@ -111,9 +112,13 @@ uv run playwright install chromium
 | `HA_URL`, `HA_TOKEN` | Home Assistant (Long-Lived Access Token) |
 | `EMAIL_*`, `IMAP_*`, `SMTP_*` | E-Mail-Konto |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | Spotify Web API (siehe unten) |
+| `SPOTIFY_DEVICE_NAME` | bevorzugtes Spotify-Gerät (Namensteil), leer = dieser Rechner |
 | `TTS_ENGINE`, `EDGE_VOICE`, `EDGE_RATE`, `EDGE_PITCH` | Sprachausgabe: `edge` (neuronal, online) oder `system` (offline) |
 | `VOICE_MODE_ON_START`, `WAKE_WORD_THRESHOLD`, `FOLLOW_UP_SECONDS`, `ACK_STYLE`, `ACK_PHRASE` | Sprachmodus: Autostart, Empfindlichkeit, Nachfrage-Fenster, Bestätigung (Chime und/oder gesprochenes „Ja?“) |
+| `WAKE_WORD_MODEL` | openWakeWord-Modell (Standard `hey_jarvis`) |
+| `BARGE_IN_THRESHOLD`, `SILENCE_LIMIT_SECONDS`, `VAD_THRESHOLD` | Reinreden-Lautstärke (0 = aus), Sprechpause bis Satzende, Schwelle der Spracherkennung |
 | `TTS_ENABLED`, `VOICE_NAME`, `LANGUAGE` | Sprachausgabe an/aus, Systemstimme, Sprache |
+| `MEMORY_DB`, `MEMORY_MAX_FACTS` | Datei des Gedächtnisses (Standard `data/jarvis.db`), Fakten pro System-Prompt (Standard 60) |
 | `SCREEN_ENABLED` | `true` (Standard): Jarvis darf auf Nachfrage einen Screenshot machen und ans LLM schicken |
 | `ORB_ENABLED`, `ORB_PORT` | Ereignis-Server für das Orb-Overlay schon beim Start (sonst erst mit `orb`), Port Standard 8765 |
 
@@ -159,8 +164,8 @@ uv run python main.py            # Texteingabe
 uv run python main.py --voice    # direkt im Sprachmodus („Hey Jarvis“)
 ```
 
-Befehle in der Konsole: `wake` (Sprachmodus), `v` (einmalige Spracheingabe), `spotify login`,
-`memory`, `reset`, `hilfe`, `exit`.
+Befehle in der Konsole: `wake` (Sprachmodus), `v` (einmalige Spracheingabe), `orb` / `orb aus`,
+`spotify login`, `memory`, `kosten` (Verbrauch dieser Sitzung), `reset`, `hilfe`, `exit`.
 
 ### Sprachmodus
 
@@ -249,8 +254,12 @@ den Ersatz-Provider (`LLM_FALLBACK_PROVIDER`).
 ## Tests
 
 ```bash
-uv run pytest
+uv run pytest        # Tests
+uv run ruff check .  # Lint
 ```
+
+GitHub Actions führt beides bei jedem Push und Pull Request auf macOS und Windows aus (Python 3.11
+und 3.14) und prüft, ob das Orb-Fenster auf beiden Systemen kompiliert.
 
 ## Roadmap
 

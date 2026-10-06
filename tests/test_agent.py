@@ -1,7 +1,5 @@
 from typing import Any, Dict, List
 
-import pytest
-
 from core.agent import JarvisAgent
 from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall
 from tools.base import BaseTool, ToolResult

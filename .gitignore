@@ -68,3 +68,15 @@ data/*.log.*
 # Orb (Tauri): Build-Ausgabe und generierte Schemas
 orb/src-tauri/target/
 orb/src-tauri/gen/
+
+# Werkzeuge
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+Thumbs.db
+
+# weitere Jarvis-Laufzeitdaten
+data/*.db-wal
+data/*.db-shm
+data/*.mp3

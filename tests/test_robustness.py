@@ -17,10 +17,9 @@ from core.agent import JarvisAgent
 from core.llm.base import LLMError, LLMResponse, ToolCall
 from core.mic import MicError, MicStream
 from core.voice_loop import VoiceLoop
-from tools.base import BaseTool, ToolResult
-
 from tests.test_agent import FakeProvider
 from tests.test_voice_loop import FakeDetector, FakeListener, FakeVoice, OrbRecorder
+from tools.base import BaseTool, ToolResult
 
 OK = SimpleNamespace(input_overflow=False)
 

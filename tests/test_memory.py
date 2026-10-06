@@ -1,9 +1,8 @@
 from core.agent import JarvisAgent
 from core.llm.base import LLMResponse, ToolCall
 from core.memory import MemoryStore
-from tools.memory_tool import MemoryTool
-
 from tests.test_agent import FakeProvider
+from tools.memory_tool import MemoryTool
 
 
 def test_add_search_update_delete(tmp_path):

@@ -29,7 +29,10 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["browser-use>=0.5", "playwright>=1.45"]
-dev = ["pytest>=8.0"]
+
+[dependency-groups]
+# installiert `uv sync` automatisch mit
+dev = ["pytest>=8.0", "ruff>=0.14"]
 
 [tool.uv]
 package = false
@@ -37,3 +40,11 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# Fehler (Syntax, Pyflakes), Bugbear und Import-Reihenfolge – keine reinen Stilregeln
+select = ["E9", "F", "B", "I"]

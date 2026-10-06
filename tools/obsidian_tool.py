@@ -192,7 +192,7 @@ class ObsidianTool(BaseTool):
             notes = sorted(self._notes(), key=lambda p: p.stat().st_mtime, reverse=True)[: max(1, int(recent))]
             lines = [f"{date.fromtimestamp(p.stat().st_mtime).isoformat()}  {self._rel(p)}" for p in notes]
             return ToolResult.ok(
-                f"Zuletzt geänderte Notizen:\n" + "\n".join(lines), data=[self._rel(p) for p in notes]
+                "Zuletzt geänderte Notizen:\n" + "\n".join(lines), data=[self._rel(p) for p in notes]
             )
         root = self._folder_path(folder)
         if isinstance(root, ToolResult):

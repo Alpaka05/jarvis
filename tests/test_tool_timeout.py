@@ -2,9 +2,8 @@ import time
 
 from core.agent import JarvisAgent
 from core.llm.base import LLMResponse, ToolCall
-from tools.base import BaseTool, ToolResult
-
 from tests.test_agent import FakeProvider
+from tools.base import BaseTool, ToolResult
 
 
 class SlowTool(BaseTool):

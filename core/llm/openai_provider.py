@@ -103,8 +103,8 @@ class OpenAICompatProvider(LLMProvider):
             response = self.client.chat.completions.create(**params)
         except o.AuthenticationError as e:
             raise LLMError(f"{self.name}: API-Key ungültig ({e})") from e
-        except o.RateLimitError:
-            raise LLMError(f"{self.name}: Rate-Limit erreicht, bitte kurz warten.")
+        except o.RateLimitError as e:
+            raise LLMError(f"{self.name}: Rate-Limit erreicht, bitte kurz warten.") from e
         except o.NotFoundError as e:
             raise LLMError(f"{self.name}: Modell '{self.model}' nicht gefunden.{self._installed_models_hint()}") from e
         except o.APIConnectionError as e:

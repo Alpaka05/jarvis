@@ -7,6 +7,7 @@ import tools.homeassistant_tool as ha_module
 import tools.search_tool as search_module
 from core.agent import UNTRUSTED_PREFIX, JarvisAgent
 from core.llm.base import LLMResponse, ToolCall
+from tests.test_agent import FakeProvider
 from tools.base import BaseTool, Policy, Risk, ToolResult
 from tools.browser_tool import BrowserTool
 from tools.calendar_tool import CalendarTool
@@ -15,8 +16,6 @@ from tools.mail_tool import MailTool, parse_recipients
 from tools.memory_tool import MemoryTool
 from tools.search_tool import SearchTool, blocked_reason
 from tools.system_tool import SystemTool
-
-from tests.test_agent import FakeProvider
 
 
 class Reader(BaseTool):
