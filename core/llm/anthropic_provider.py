@@ -1,9 +1,10 @@
 """Anthropic (Claude) Provider – nutzt das offizielle `anthropic` SDK mit Tool Use."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, Dict, List
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, b64, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, TextFn, ToolCall, Usage, b64, group_tool_results
 
 MAX_TOKENS = 8192
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -79,8 +80,7 @@ class AnthropicProvider(LLMProvider):
 
     # ── Aufruf ───────────────────────────────────────────────────────────────
 
-    def chat(self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> LLMResponse:
-        a = self._anthropic
+    def _params(self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": MAX_TOKENS,
@@ -93,9 +93,13 @@ class AnthropicProvider(LLMProvider):
         }
         if tools:
             params["tools"] = self.convert_tools(tools)
+        return params
 
+    @contextmanager
+    def _errors(self):
+        a = self._anthropic
         try:
-            response = self.client.messages.create(**params)
+            yield
         except a.AuthenticationError as e:
             raise LLMError(f"Anthropic: API-Key ungültig ({e.message})") from e
         except a.RateLimitError as e:
@@ -104,7 +108,33 @@ class AnthropicProvider(LLMProvider):
             raise LLMError(f"Anthropic: API-Fehler {e.status_code}: {e.message}") from e
         except a.APIConnectionError as e:
             raise LLMError(f"Anthropic: Keine Verbindung ({e})") from e
+        except a.APIError as e:  # z.B. Fehler-Event mitten im Stream
+            raise LLMError(f"Anthropic: {e}") from e
 
+    def chat(self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> LLMResponse:
+        with self._errors():
+            response = self.client.messages.create(**self._params(system, messages, tools))
+        return self._to_response(response)
+
+    def chat_stream(
+        self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], on_text: TextFn
+    ) -> LLMResponse:
+        emitted = False
+        with self._errors():
+            with self.client.messages.stream(**self._params(system, messages, tools)) as stream:
+                for event in stream:
+                    if event.type == "content_block_start" and event.content_block.type == "text" and emitted:
+                        on_text("\n")  # wie in _to_response: Textblöcke zeilenweise verbinden
+                    elif event.type == "text" and event.text:
+                        on_text(event.text)
+                        emitted = True
+                response = stream.get_final_message()
+        result = self._to_response(response)
+        if result.stop_reason == "refusal" and not emitted and result.text:
+            on_text(result.text)
+        return result
+
+    def _to_response(self, response) -> LLMResponse:
         text_parts: List[str] = []
         tool_calls: List[ToolCall] = []
         for block in response.content:

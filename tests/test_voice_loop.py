@@ -60,6 +60,22 @@ class FakeVoice:
     def speak(self, text, **kwargs):
         self.spoken.append(text)
 
+    def open_stream(self, **kwargs):
+        voice = self
+
+        class Stream:
+            def __init__(self):
+                self.parts = []
+
+            def feed(self, text):
+                self.parts.append(text)
+
+            def close(self):
+                if self.parts:
+                    voice.spoken.append("".join(self.parts))
+
+        return Stream()
+
     def is_speaking(self):
         return False
 
@@ -85,8 +101,11 @@ class FakeAgent:
     def __init__(self):
         self.queries = []
 
-    def process_query(self, q):
+    def process_query(self, q, on_text=None):
         self.queries.append(q)
+        if on_text:
+            on_text("Es ist ")
+            on_text("zwölf Uhr.")
         return "Es ist zwölf Uhr."
 
 

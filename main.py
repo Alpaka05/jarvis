@@ -287,19 +287,22 @@ def main():
             voice.stop()  # laufende Ausgabe abbrechen, wenn eine neue Anfrage kommt
             orb.transcript("user", user_input)
             orb.state("thinking")
+            speech = voice.open_stream()  # spricht schon, während die Antwort noch entsteht
             try:
                 with console.status("[bold green]Denke nach... [dim](Strg+C bricht diese Frage ab)[/dim][/bold green]", spinner="dots"):
-                    response = agent.process_query(user_input)
+                    response = agent.process_query(user_input, on_text=speech.feed)
             except KeyboardInterrupt:
+                voice.stop()
                 orb.state("idle")
                 console.print("[yellow]Frage abgebrochen.[/yellow]")
                 continue
+            finally:
+                speech.close()
 
             console.print(Panel(escape(response), title="[bold green]Jarvis[/bold green]", border_style="green"))
             if agent.last_usage.calls:
                 console.print(f"  [dim]{agent.usage_summary(agent.last_usage)}[/dim]")
             orb.transcript("assistant", response)
-            voice.speak(response)
             if voice.is_speaking():
                 console.print("[dim]Enter stoppt die Sprachausgabe.[/dim]")
             else:

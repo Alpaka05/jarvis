@@ -201,7 +201,11 @@ def test_tts_producer_ends_when_playback_fails(monkeypatch):
     monkeypatch.setattr(voice_module.platform_utils, "open_audio_stream", broken_stream)
     engine = voice_module.VoiceEngine.__new__(voice_module.VoiceEngine)
     text = " ".join(f"Satz Nummer {i} ist hier." for i in range(10))  # mehr Sätze als die Warteschlange fasst
-    engine._run_edge(text, threading.Event(), listen_for_interrupt=False)
+    utterance = voice_module._Utterance()
+    for sentence in voice_module.split_sentences(text):
+        utterance.add(sentence)
+    utterance.finish()
+    engine._run_edge(utterance, listen_for_interrupt=False)
     deadline = time.monotonic() + 2
     while any(t.name == "tts-producer" for t in threading.enumerate()) and time.monotonic() < deadline:
         time.sleep(0.05)
