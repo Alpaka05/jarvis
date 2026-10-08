@@ -273,6 +273,7 @@ def test_gemini_stream_rotates_model_only_before_text(monkeypatch):
     provider.models = ["a", "b"]
     provider.model = "a"
     provider._cooldown_until = {}
+    provider.thinking_level, provider._no_thinking_level = "", set()
 
     def ok_stream():
         cand = SimpleNamespace(content=types.Content(role="model", parts=[types.Part(text="Hallo.")]), finish_reason="STOP")
@@ -349,3 +350,53 @@ def test_anthropic_stream_emits_text_and_returns_final_message():
     response = provider.chat_stream("sys", [{"role": "user", "content": "hi"}], [], out.append)
     assert "".join(out) == response.text == "Hallo\nWelt"
     assert response.tool_calls[0].name == "echo"
+
+
+def _bare_gemini(models, thinking_level="low"):
+    from google.genai import types
+
+    from core.llm.gemini_provider import GeminiProvider
+
+    provider = GeminiProvider.__new__(GeminiProvider)
+    provider._types = types
+    provider.models, provider.model = list(models), models[0]
+    provider._cooldown_until = {}
+    provider.thinking_level, provider._no_thinking_level = thinking_level, set()
+    return provider, types
+
+
+def test_gemini_retries_same_model_without_thinking_level_if_rejected():
+    provider, types = _bare_gemini(["alt", "neu"])
+    seen = []
+
+    def generate(model, contents, config):
+        seen.append((model, config.thinking_config is not None))
+        if model == "alt" and config.thinking_config is not None:
+            raise RuntimeError("400 INVALID_ARGUMENT: thinking_level is not supported for this model")
+        cand = SimpleNamespace(content=types.Content(role="model", parts=[types.Part(text="ok")]), finish_reason="STOP")
+        return SimpleNamespace(candidates=[cand], usage_metadata=None)
+
+    provider.client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+    assert provider.chat("", [{"role": "user", "content": "x"}], []).text == "ok"
+    assert seen == [("alt", True), ("alt", False)]
+    provider.chat("", [{"role": "user", "content": "x"}], [])
+    assert seen[-1] == ("alt", False)  # gemerkt, kein zweiter Fehlversuch
+
+
+def test_gemini_pauses_overloaded_models_longer_than_quota_limits():
+    import time as time_module
+
+    provider, types = _bare_gemini(["ueberlastet", "kontingent", "frei"])
+    errors = {"ueberlastet": "503 UNAVAILABLE high demand", "kontingent": "429 RESOURCE_EXHAUSTED"}
+
+    def generate(model, contents, config):
+        if model in errors:
+            raise RuntimeError(errors[model])
+        cand = SimpleNamespace(content=types.Content(role="model", parts=[types.Part(text="ok")]), finish_reason="STOP")
+        return SimpleNamespace(candidates=[cand], usage_metadata=None)
+
+    provider.client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+    now = time_module.time()
+    provider.chat("", [{"role": "user", "content": "x"}], [])
+    assert provider._cooldown_until["ueberlastet"] - now >= 290
+    assert 55 <= provider._cooldown_until["kontingent"] - now <= 70

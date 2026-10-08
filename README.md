@@ -103,8 +103,9 @@ uv run playwright install chromium
 | `LLM_EFFORT` | Denk-Aufwand für Claude: `low` … `max` (Standard `medium`) |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude, Standardmodell `claude-sonnet-5` (Opus 5 ist ~2,5× teurer) |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini, Standard `gemini-3.6-flash` (kostenloses Kontingent über [AI Studio](https://aistudio.google.com)) |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Google Gemini, Standard `gemini-3.5-flash-lite` (kostenloses Kontingent über [AI Studio](https://aistudio.google.com)) |
 | `GEMINI_FALLBACK_MODELS` | weitere Gemini-Modelle, auf die Jarvis bei erschöpftem Kontingent ausweicht (leer = keine) |
+| `GEMINI_THINKING_LEVEL`, `GEMINI_TIMEOUT` | Denkzeit (`low` = schnell, leer = Modell-Standard) und Sekunden bis zum Wechsel auf das nächste Modell (20) |
 | `OLLAMA_HOST`, `OLLAMA_MODEL` | lokales Modell, vorher `ollama pull llama3.1:8b` |
 | `USER_NAME`, `SALUTATION` | dein Name; Anrede am Anfang jeder Antwort (z.B. `Sir`) |
 | `TAVILY_API_KEY` | optional: bessere Websuche über Tavily, sonst kostenlose ddgs-Metasuche |
