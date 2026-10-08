@@ -25,7 +25,8 @@ class GeminiProvider(LLMProvider):
         api_key: str,
         model: str = "gemini-3.6-flash",
         fallback_models: Optional[List[str]] = None,
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = 20.0,
+        thinking_level: str = "",
     ):
         if not api_key:
             raise LLMError("GEMINI_API_KEY fehlt in der .env-Datei.")
@@ -40,8 +41,12 @@ class GeminiProvider(LLMProvider):
         self.model = model
         self.models: List[str] = [model] + [m for m in (fallback_models or []) if m and m != model]
         self._cooldown_until: Dict[str, float] = {}  # Modell → Zeitpunkt, ab dem es wieder nutzbar ist
+        self.thinking_level = thinking_level
+        self._no_thinking_level: set = set()  # Modelle, die thinking_level ablehnen (z.B. ältere 2.x)
 
     # ── Rotation ─────────────────────────────────────────────────────────────
+
+    OVERLOAD_PAUSE = 300.0  # überlastetes oder hängendes Modell so lange überspringen
 
     @staticmethod
     def _retry_seconds(error_text: str, default: float = 60.0) -> float:
@@ -57,6 +62,22 @@ class GeminiProvider(LLMProvider):
     def _is_unknown_model(error_text: str) -> bool:
         """Modell gibt es (für diesen Key) nicht oder nicht mehr – Google stellt ältere Modelle ein."""
         return "404" in error_text or "NOT_FOUND" in error_text
+
+    @staticmethod
+    def _rejects_thinking_level(error_text: str) -> bool:
+        return ("400" in error_text or "INVALID_ARGUMENT" in error_text) and "thinking" in error_text.lower()
+
+    def _config(self, model: str, system: str, tools: List[Dict[str, Any]]):
+        t = self._types
+        thinking = None
+        if self.thinking_level and model not in self._no_thinking_level:
+            thinking = t.ThinkingConfig(thinking_level=self.thinking_level)
+        return t.GenerateContentConfig(
+            system_instruction=system or None,
+            tools=self.convert_tools(tools),
+            automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
+            thinking_config=thinking,
+        )
 
     def _available_models(self) -> List[str]:
         now = time.time()
@@ -128,12 +149,6 @@ class GeminiProvider(LLMProvider):
         return self._generate(system, messages, tools, on_text)
 
     def _generate(self, system, messages, tools, on_text: Optional[TextFn]) -> LLMResponse:
-        t = self._types
-        cfg = t.GenerateContentConfig(
-            system_instruction=system or None,
-            tools=self.convert_tools(tools),
-            automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
-        )
         contents = self.convert_messages(messages)
         result = None
         errors: List[str] = []
@@ -143,7 +158,12 @@ class GeminiProvider(LLMProvider):
             emitted[0] = True
             on_text(text)
 
-        for model in self._available_models():
+        models = self._available_models()
+        i = 0
+        while i < len(models):
+            model = models[i]
+            i += 1
+            cfg = self._config(model, system, tools)
             try:
                 if on_text is None:
                     result = self._collect(self.client.models.generate_content(model=model, contents=contents, config=cfg))
@@ -159,8 +179,17 @@ class GeminiProvider(LLMProvider):
                 text = str(e)
                 if emitted[0]:  # Antwort bricht mitten im Satz ab – ein zweites Modell finge von vorn an
                     raise LLMError(f"Gemini ({model}): Antwort abgebrochen: {text[:300]}") from e
+                if cfg.thinking_config is not None and self._rejects_thinking_level(text):
+                    # Gleiches Modell noch einmal mit seiner Standard-Denkzeit
+                    log.info("Gemini %s kennt thinking_level nicht, nutze den Standard: %s", model, text[:200])
+                    self._no_thinking_level.add(model)
+                    i -= 1
+                    continue
                 if self._is_rate_limited(text):
-                    wait = self._retry_seconds(text)
+                    # Minuten-Kontingent (429) ist bald wieder frei; Überlastung oder Timeout dauern
+                    # erfahrungsgemäß länger – sonst hinge jede Anfrage erneut im Timeout
+                    quota = "429" in text or "RESOURCE_EXHAUSTED" in text
+                    wait = self._retry_seconds(text, 60.0 if quota else self.OVERLOAD_PAUSE)
                     self._cooldown_until[model] = time.time() + wait
                     log.info("Gemini %s ausgelastet, Pause %.0f s: %s", model, wait, text[:200])
                     errors.append(f"{model}: ausgelastet oder Kontingent erschöpft, wieder in {int(wait)} s")

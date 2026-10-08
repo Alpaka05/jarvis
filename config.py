@@ -63,9 +63,15 @@ class Config:
     OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-4o-mini")
 
     GEMINI_API_KEY: str = _env("GEMINI_API_KEY")
-    GEMINI_MODEL: str = _env("GEMINI_MODEL", "gemini-3.6-flash")
-    # Weitere Modelle, auf die bei erschöpftem Minuten-Kontingent rotiert wird (jedes Modell hat ein eigenes)
-    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash-lite", allow_empty=True)
+    GEMINI_MODEL: str = _env("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    # Weitere Modelle, auf die bei erschöpftem Minuten-Kontingent rotiert wird (jedes Modell hat ein eigenes).
+    # Reihenfolge nach Antwortzeit (gemessen 10/2026): 3.6-flash war oft überlastet, 3.1-flash-lite braucht 12–24 s.
+    GEMINI_FALLBACK_MODELS: str = _env("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.6-flash,gemini-3.1-flash-lite", allow_empty=True)
+    # Wie lange das Modell vor der Antwort nachdenkt: minimal, low, medium, high (leer = Modell-Standard).
+    # „low“ halbiert die Antwortzeit grob, für Assistenten-Aufgaben reicht das meist.
+    GEMINI_THINKING_LEVEL: str = _env("GEMINI_THINKING_LEVEL", "low").lower()
+    # Sekunden ohne Daten vom Modell, bis auf das nächste Modell gewechselt wird
+    GEMINI_TIMEOUT: float = _float("GEMINI_TIMEOUT", "20")
 
     OLLAMA_HOST: str = _env("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL: str = _env("OLLAMA_MODEL", "llama3.1:8b")

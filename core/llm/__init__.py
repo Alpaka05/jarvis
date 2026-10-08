@@ -93,7 +93,13 @@ def build_provider(name: str) -> LLMProvider:
         from core.llm.gemini_provider import GeminiProvider
 
         fallbacks = [m.strip() for m in config.GEMINI_FALLBACK_MODELS.split(",") if m.strip()]
-        return GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL, fallbacks)
+        return GeminiProvider(
+            config.GEMINI_API_KEY,
+            config.GEMINI_MODEL,
+            fallbacks,
+            timeout_seconds=config.GEMINI_TIMEOUT,
+            thinking_level=config.GEMINI_THINKING_LEVEL,
+        )
     if name == "ollama":
         from core.llm.openai_provider import make_ollama_provider
 
