@@ -21,7 +21,9 @@ from __future__ import annotations
 import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+TextFn = Callable[[str], None]  # nimmt Textstücke entgegen, sobald das Modell sie erzeugt
 
 
 @dataclass
@@ -94,6 +96,17 @@ class LLMProvider(ABC):
             messages: Verlauf im neutralen Format (siehe Modul-Docstring).
             tools: Tool-Schemas im Format {"name", "description", "parameters": <JSON Schema>}.
         """
+
+    def chat_stream(
+        self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], on_text: TextFn
+    ) -> LLMResponse:
+        """Wie chat(), meldet den Antworttext aber schon während der Erzeugung Stück für Stück an
+        on_text – damit die Sprachausgabe nicht auf die ganze Antwort warten muss. Gibt am Ende
+        dieselbe LLMResponse wie chat() zurück. Ohne eigenes Streaming kommt der Text auf einmal."""
+        response = self.chat(system, messages, tools)
+        if response.text:
+            on_text(response.text)
+        return response
 
     def describe(self) -> str:
         return f"{self.name} ({self.model})"

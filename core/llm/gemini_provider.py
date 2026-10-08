@@ -6,7 +6,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from core.llm.base import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, group_tool_results
+from core.llm.base import LLMError, LLMProvider, LLMResponse, TextFn, ToolCall, Usage, group_tool_results
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +120,14 @@ class GeminiProvider(LLMProvider):
     # ── Aufruf ───────────────────────────────────────────────────────────────
 
     def chat(self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> LLMResponse:
+        return self._generate(system, messages, tools, None)
+
+    def chat_stream(
+        self, system: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], on_text: TextFn
+    ) -> LLMResponse:
+        return self._generate(system, messages, tools, on_text)
+
+    def _generate(self, system, messages, tools, on_text: Optional[TextFn]) -> LLMResponse:
         t = self._types
         cfg = t.GenerateContentConfig(
             system_instruction=system or None,
@@ -127,15 +135,30 @@ class GeminiProvider(LLMProvider):
             automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
         )
         contents = self.convert_messages(messages)
-        response = None
+        result = None
         errors: List[str] = []
+        emitted = [False]  # schon Text weitergegeben? Dann nicht mehr auf ein anderes Modell wechseln
+
+        def emit(text: str):
+            emitted[0] = True
+            on_text(text)
+
         for model in self._available_models():
             try:
-                response = self.client.models.generate_content(model=model, contents=contents, config=cfg)
+                if on_text is None:
+                    result = self._collect(self.client.models.generate_content(model=model, contents=contents, config=cfg))
+                else:
+                    result = self._collect_stream(
+                        self.client.models.generate_content_stream(model=model, contents=contents, config=cfg), emit
+                    )
                 self.model = model  # zuletzt erfolgreiches Modell merken (für Statusanzeige/Kosten)
                 break
+            except LLMError:
+                raise
             except Exception as e:
                 text = str(e)
+                if emitted[0]:  # Antwort bricht mitten im Satz ab – ein zweites Modell finge von vorn an
+                    raise LLMError(f"Gemini ({model}): Antwort abgebrochen: {text[:300]}") from e
                 if self._is_rate_limited(text):
                     wait = self._retry_seconds(text)
                     self._cooldown_until[model] = time.time() + wait
@@ -149,15 +172,13 @@ class GeminiProvider(LLMProvider):
                     errors.append(f"{model}: gibt es nicht (mehr) – GEMINI_FALLBACK_MODELS anpassen")
                     continue
                 raise LLMError(f"Gemini ({model}): {text[:300]}") from e
-        if response is None:
+        if result is None:
             raise LLMError("Gemini: kein Modell verfügbar – " + "; ".join(errors))
 
-        if not response.candidates:
-            raise LLMError("Gemini: Leere Antwort (möglicherweise blockiert).")
-        content = response.candidates[0].content
+        parts, finish_reason, meta = result
         text_parts: List[str] = []
         tool_calls: List[ToolCall] = []
-        for i, part in enumerate(content.parts or []):
+        for i, part in enumerate(parts):
             fc = getattr(part, "function_call", None)
             if fc is not None and fc.name:
                 tool_calls.append(ToolCall(id=fc.id or f"call_{i}", name=fc.name, arguments=dict(fc.args or {})))
@@ -166,21 +187,67 @@ class GeminiProvider(LLMProvider):
 
         raw = None
         try:
+            content = self._types.Content(role="model", parts=parts)
             raw = {"provider": "gemini", "content": content.model_dump(exclude_none=True)}
         except Exception:
             pass
 
         usage = Usage(calls=1)
-        meta = getattr(response, "usage_metadata", None)
         if meta is not None:
             cached = getattr(meta, "cached_content_token_count", 0) or 0
             usage.input_tokens = (getattr(meta, "prompt_token_count", 0) or 0) - cached
             usage.cache_read_tokens = cached
             usage.output_tokens = (getattr(meta, "candidates_token_count", 0) or 0) + (getattr(meta, "thoughts_token_count", 0) or 0)
         return LLMResponse(
-            text="\n".join(text_parts).strip(),
+            text=("" if on_text is not None else "\n").join(text_parts).strip(),
             tool_calls=tool_calls,
             raw=raw,
-            stop_reason=str(getattr(response.candidates[0], "finish_reason", "") or ""),
+            stop_reason=finish_reason,
             usage=usage,
+        )
+
+    @staticmethod
+    def _collect(response):
+        """Einzelantwort → (Teile, finish_reason, usage_metadata)."""
+        if not response.candidates:
+            raise LLMError("Gemini: Leere Antwort (möglicherweise blockiert).")
+        candidate = response.candidates[0]
+        parts = list((candidate.content.parts if candidate.content else None) or [])
+        return parts, str(getattr(candidate, "finish_reason", "") or ""), getattr(response, "usage_metadata", None)
+
+    def _collect_stream(self, chunks, emit: TextFn):
+        """Gestreamte Antwort einsammeln, Text sofort weitergeben → (Teile, finish_reason, usage_metadata)."""
+        parts: List[Any] = []
+        finish_reason = ""
+        meta = None
+        got_candidate = False
+        for chunk in chunks:
+            if getattr(chunk, "usage_metadata", None) is not None:
+                meta = chunk.usage_metadata
+            if not chunk.candidates:
+                continue
+            got_candidate = True
+            candidate = chunk.candidates[0]
+            if getattr(candidate, "finish_reason", None):
+                finish_reason = str(candidate.finish_reason)
+            for part in (candidate.content.parts if candidate.content else None) or []:
+                if self._is_plain_text(part) and parts and self._is_plain_text(parts[-1]):
+                    # Textstücke zu einem Teil zusammenfassen, damit der Verlauf nicht aus Hunderten Teilen besteht
+                    parts[-1] = self._types.Part(text=parts[-1].text + part.text)
+                else:
+                    parts.append(part)
+                if getattr(part, "text", None) and not getattr(part, "thought", False):
+                    emit(part.text)
+        if not got_candidate:
+            raise LLMError("Gemini: Leere Antwort (möglicherweise blockiert).")
+        return parts, finish_reason, meta
+
+    @staticmethod
+    def _is_plain_text(part) -> bool:
+        """Reiner Antworttext – ohne Gedanken, Signatur oder Funktionsaufruf, die unverändert bleiben müssen."""
+        return (
+            bool(getattr(part, "text", None))
+            and not getattr(part, "thought", False)
+            and not getattr(part, "thought_signature", None)
+            and getattr(part, "function_call", None) is None
         )

@@ -265,14 +265,19 @@ class VoiceLoop:
                 self.console.print("[dim]Okay, bis später. Lausche wieder auf „Hey Jarvis“.[/dim]")
                 return
 
-            with self.console.status("[bold green]Denke nach...[/bold green]", spinner="dots"):
-                response = self.agent.process_query(text)
+            # Jarvis beginnt zu sprechen, sobald der erste Satz der Antwort fertig ist
+            speech = self.voice.open_stream(listen_for_interrupt=False)
+            try:
+                with self.console.status("[bold green]Denke nach...[/bold green]", spinner="dots"):
+                    response = self.agent.process_query(text, on_text=speech.feed)
+            finally:
+                speech.close()
             self.console.print(Panel(escape(response), title="[bold green]Jarvis[/bold green]", border_style="green"))
             if getattr(self.agent, "last_usage", None) and self.agent.last_usage.calls:
                 self.console.print(f"  [dim]{self.agent.usage_summary(self.agent.last_usage)}[/dim]")
             orb.transcript("assistant", response)
 
-            interrupted = self._speak_with_barge_in(stream, response)
+            interrupted = self._watch_for_barge_in(stream)
             if interrupted == "wake":
                 # „Hey Jarvis“ mitten in der Antwort: wie ein neuer Aufruf behandeln
                 orb.state("wake")
@@ -391,12 +396,14 @@ class VoiceLoop:
             return True
         return bool(cls.TEXT_MODE_PATTERN.search(norm))
 
-    def _speak_with_barge_in(self, stream, text: str) -> Optional[str]:
-        """Spricht die Antwort. Abbruch durch „Hey Jarvis“ (Rückgabe 'wake') oder durch
-        anhaltendes, lautes Dazwischenreden (Rückgabe 'speech'). None = zu Ende gesprochen."""
-        self.voice.speak(text, listen_for_interrupt=False, block=False)
+    def _watch_for_barge_in(self, stream) -> Optional[str]:
+        """Hört zu, solange die Antwort gesprochen wird. Abbruch durch „Hey Jarvis“ (Rückgabe 'wake')
+        oder durch anhaltendes, lautes Dazwischenreden (Rückgabe 'speech'). None = zu Ende gesprochen."""
+        # Während Jarvis nachdachte, hat sich Mikrofon-Audio gestaut (samt Echo der ersten Sätze) –
+        # nur auf das reagieren, was ab jetzt kommt
+        if hasattr(stream, "flush"):
+            stream.flush()
         self.detector.reset()
-        time.sleep(0.4)  # Startlatenz der Ausgabe abwarten
         speech_frames = 0
         needed = 6  # ~0.5 s zusammenhängende Sprache oberhalb der Lautstärke-Schwelle
         while self.voice.is_speaking():

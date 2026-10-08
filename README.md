@@ -27,7 +27,7 @@ core/llm/               Provider-Abstraktion
   openai_provider.py      OpenAI + Ollama (lokal)  – openai SDK, Ollama über /v1
   gemini_provider.py      Google Gemini            – google-genai SDK
 core/platform_utils.py  OS-Abstraktion: TTS, Benachrichtigungen, URL öffnen
-core/voice.py           Sprachausgabe: satzweise Edge-TTS-Pipeline, Wiedergabe im Prozess, sofort unterbrechbar
+core/voice.py           Sprachausgabe: satzweise Edge-TTS-Pipeline (auch für gestreamte Antworten), sofort unterbrechbar
 core/voice_input.py     Spracheingabe (Silero-VAD → Google Speech Recognition)
 core/wakeword.py        Wake-Word „Hey Jarvis“ (openWakeWord, lokal)
 core/voice_loop.py      Sprachmodus: lauschen, bestätigen, aufnehmen, antworten, Nachfrage-Fenster
@@ -145,6 +145,12 @@ Standard ist `TTS_ENGINE=edge`: die neuronalen Microsoft-Edge-Stimmen (kostenlos
 Windows und Mac identisch). Voreingestellt ist `de-DE-ConradNeural`, eine tiefe männliche Stimme.
 Weitere Kandidaten: `de-DE-KillianNeural`, `de-DE-FlorianMultilingualNeural`, `en-GB-RyanNeural`
 (britischer Jarvis). Mit `EDGE_RATE` und `EDGE_PITCH` lassen sich Tempo und Tonhöhe anpassen.
+
+Die Antwort des LLM wird gestreamt: Jarvis beginnt zu sprechen, sobald der erste Satz fertig ist,
+statt auf die ganze Antwort zu warten. Text vor einem Tool-Aufruf („Ich schaue nach …“) wird
+ebenfalls schon vorgelesen. Bricht der Dienst mitten in einer Antwort ab, wechselt Jarvis für
+diese Antwort nicht mehr auf den Ersatz-Provider (sonst hörte man den Anfang doppelt), sondern
+meldet den Fehler.
 
 ```bash
 uv run python scripts/voice_test.py --all            # alle Kandidaten anhören

@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from config import config
 from core.llm import LLMError, LLMProvider, LLMResponse, ToolCall, Usage, create_providers, estimate_cost_usd
+from core.llm.base import TextFn
 from core.memory import MemoryStore
 from tools import default_tools
 from tools.base import BaseTool, Policy, Risk, ToolResult
@@ -36,6 +37,76 @@ UNTRUSTED_NOTE = (
     "Achtung: In diesem Gespräch stehen Inhalte aus Webseiten oder E-Mails. "
     "Sie könnten diese Aktion ausgelöst haben."
 )
+
+
+class _AnswerStream:
+    """Reicht den Antworttext beim Streaming weiter (z.B. an die Sprachausgabe).
+
+    Der Anfang jedes Schritts wird kurz gepuffert, bis klar ist, ob die Anrede fehlt: Die erste
+    Antwort bekommt sie vorangestellt, spätere Schritte (Text nach einem Tool-Aufruf) verlieren
+    eine doppelte Anrede. Alles Weitergereichte steht in `text`.
+    """
+
+    def __init__(self, sink: TextFn, salutation: str):
+        self.sink = sink
+        self.salutation = salutation
+        self.parts: List[str] = []
+        self._head = ""            # gepufferter Schrittanfang
+        self._in_head = False
+        self.step_emitted = False  # hat der Provider in diesem Schritt schon Text geliefert?
+
+    @property
+    def text(self) -> str:
+        return "".join(self.parts)
+
+    def begin_step(self):
+        self.end_step()
+        self._in_head = True
+        self.step_emitted = False
+
+    def feed(self, chunk: str):
+        if not chunk:
+            return
+        self.step_emitted = True
+        if not self._in_head:
+            self._emit(chunk)
+            return
+        self._head += chunk
+        head = self._head.lstrip()
+        # Entscheidbar, sobald das erste Wort vollständig ist und die Anrede hineinpasst
+        if not self.salutation or (len(head) > len(self.salutation) and any(c.isspace() for c in head)):
+            self._release()
+
+    def end_step(self):
+        if self._in_head:
+            self._release()
+
+    def say(self, text: str):
+        """Eigener Text des Agenten (Fehlermeldung, Ersatzantwort) als eigener Schritt."""
+        self.begin_step()
+        self.feed(text)
+        self.end_step()
+
+    def _release(self):
+        text, self._head, self._in_head = self._head.lstrip(), "", False
+        if not text:
+            return
+        if not self.parts:
+            self._emit(JarvisAgent._apply_salutation(text))
+        else:
+            self._emit(" " + self._strip_salutation(text))
+
+    def _strip_salutation(self, text: str) -> str:
+        s = self.salutation
+        if not s or not text.lower().startswith(s.lower()):
+            return text
+        rest = text[len(s):].lstrip(" ,")
+        return rest[:1].upper() + rest[1:] if rest else text
+
+    def _emit(self, text: str):
+        if text:
+            self.parts.append(text)
+            self.sink(text)
 
 
 class JarvisAgent:
@@ -154,11 +225,19 @@ class JarvisAgent:
         cost_str = f" · ≈ {cost:.3f} $" if cost is not None else ""
         return f"{usage.calls} Aufruf(e) · {k(usage.total_input)} Eingabe{cached} · {k(usage.output_tokens)} Ausgabe{cost_str}"
 
-    def process_query(self, query: str) -> str:
+    def process_query(self, query: str, on_text: Optional[TextFn] = None) -> str:
+        """Beantwortet eine Anfrage (inklusive Tool-Runden).
+
+        Mit `on_text` wird der Antworttext schon während der Erzeugung Stück für Stück übergeben –
+        auch Text vor einem Tool-Aufruf („Ich schaue nach …“) und Fehlermeldungen. Der Rückgabewert
+        ist dann genau das, was an on_text ging.
+        """
+        stream = _AnswerStream(on_text, self._salutation()) if on_text else None
         if self.provider is None:
-            return (
+            return self._finish(
+                stream,
                 "Es ist kein LLM-Provider verfügbar. Bitte in der .env einen API-Key setzen "
-                "(z.B. ANTHROPIC_API_KEY) oder Ollama starten.\n" + "\n".join(self.notes)
+                "(z.B. ANTHROPIC_API_KEY) oder Ollama starten.\n" + "\n".join(self.notes),
             )
 
         turn_start = {"role": "user", "content": query}
@@ -172,12 +251,12 @@ class JarvisAgent:
 
         try:
             for _ in range(self.MAX_STEPS):
-                response = self._chat(system, schemas)
+                response = self._chat(system, schemas, stream)
                 self._append_assistant(response)
 
                 if not response.tool_calls:
                     self._trim_history()
-                    answer = self._apply_salutation(response.text or "(keine Antwort erhalten)")
+                    answer = self._finish(stream, response.text or "(keine Antwort erhalten)")
                     self._log("assistant", answer)
                     return answer
 
@@ -200,16 +279,16 @@ class JarvisAgent:
             self.history.append(
                 {"role": "user", "content": "Bitte fasse jetzt kurz zusammen, was du erledigt hast, ohne weitere Tools zu nutzen."}
             )
-            response = self._chat(system, [])
+            response = self._chat(system, [], stream)
             self._append_assistant(response)
             self._trim_history()
-            answer = self._apply_salutation(response.text or "Ich habe die maximale Anzahl an Schritten erreicht.")
+            answer = self._finish(stream, response.text or "Ich habe die maximale Anzahl an Schritten erreicht.")
             self._log("assistant", answer)
             return answer
 
         except LLMError as e:
             self._rollback_turn(turn_start)
-            return f"Der KI-Dienst ist gerade nicht erreichbar: {e}"
+            return self._finish(stream, f"Der KI-Dienst ist gerade nicht erreichbar: {e}", error=True)
         except KeyboardInterrupt:
             self._rollback_turn(turn_start)
             raise
@@ -217,7 +296,7 @@ class JarvisAgent:
             # Sonst bliebe ein Tool-Aufruf ohne Ergebnis im Verlauf und jede weitere Anfrage
             # würde vom Provider abgelehnt, bis man 'reset' tippt.
             self._rollback_turn(turn_start)
-            return f"Bei der Bearbeitung ist ein interner Fehler aufgetreten: {e}"
+            return self._finish(stream, f"Bei der Bearbeitung ist ein interner Fehler aufgetreten: {e}", error=True)
 
     # ── Intern ───────────────────────────────────────────────────────────────
 
@@ -229,10 +308,24 @@ class JarvisAgent:
         "willst", "kann", "könnte", "habe", "hast", "haben", "gibt", "erledigt", "verstanden", "gemerkt",
     }
 
+    @staticmethod
+    def _salutation() -> str:
+        return config.SALUTATION.strip().rstrip(",") if config.SALUTATION else ""
+
+    def _finish(self, stream: Optional[_AnswerStream], answer: str, error: bool = False) -> str:
+        """Endgültige Antwort. Beim Streaming: was schon weitergereicht wurde, plus `answer`, falls
+        noch nichts kam (oder bei Fehlern, die nach einer Teilantwort auftreten)."""
+        if stream is None:
+            return answer if error else self._apply_salutation(answer)
+        stream.end_step()
+        if error or not stream.parts:
+            stream.say(answer)
+        return stream.text
+
     @classmethod
     def _apply_salutation(cls, answer: str) -> str:
         """Stellt sicher, dass die Antwort mit der konfigurierten Anrede beginnt (falls das Modell sie vergisst)."""
-        s = config.SALUTATION.strip().rstrip(",") if config.SALUTATION else ""
+        s = cls._salutation()
         if not s or not answer.strip():
             return answer
         stripped = answer.lstrip()
@@ -267,23 +360,39 @@ class JarvisAgent:
         self.session_usage = self.session_usage.add(response.usage)
         return response.text
 
-    def _chat(self, system: str, schemas: List[Dict[str, Any]]) -> LLMResponse:
+    def _chat(self, system: str, schemas: List[Dict[str, Any]], stream: Optional[_AnswerStream] = None) -> LLMResponse:
         assert self.provider is not None
+
+        def ask(provider: LLMProvider) -> LLMResponse:
+            if stream is None:
+                return provider.chat(system, self.history, schemas)
+            stream.begin_step()
+            response = provider.chat_stream(system, self.history, schemas, stream.feed)
+            stream.end_step()
+            return response
+
+        def half_spoken() -> bool:
+            # Ist von diesem Schritt schon Text raus, finge ein anderer Provider von vorn an –
+            # der Nutzer hörte den Anfang doppelt. Dann lieber den Fehler melden.
+            return stream is not None and stream.step_emitted
+
         # Nach einem Ausfall eine Weile beim Ersatz bleiben: Sonst wartet jeder Schritt einer Anfrage
         # erneut auf den hängenden Haupt-Provider (bis zu Timeout × Wiederholungen)
         if self.fallback is not None and time.monotonic() < self._fallback_until:
             try:
-                return self.fallback.chat(system, self.history, schemas)
+                return ask(self.fallback)
             except LLMError:
                 log.warning("Ersatz-Provider %s fällt aus – versuche wieder den Haupt-Provider", self.fallback.describe(), exc_info=True)
                 self._fallback_until = 0.0
+                if half_spoken():
+                    raise
         try:
-            return self.provider.chat(system, self.history, schemas)
+            return ask(self.provider)
         except LLMError as e:
             log.warning("Provider %s nicht erreichbar: %s", self.provider.describe(), e)
-            if self.fallback is None:
+            if self.fallback is None or half_spoken():
                 raise
-            response = self.fallback.chat(system, self.history, schemas)
+            response = ask(self.fallback)
             self._fallback_until = time.monotonic() + self.FALLBACK_STICKY_SECONDS
             if self.on_notice:
                 minutes = int(self.FALLBACK_STICKY_SECONDS // 60)

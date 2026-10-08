@@ -1,7 +1,8 @@
 """Sprachausgabe mit niedriger Latenz und Unterbrechung.
 
 Edge-Stimmen werden satzweise erzeugt: Der erste Satz wird synthetisiert und sofort
-abgespielt, während die folgenden Sätze im Hintergrund erzeugt werden. Die Wiedergabe
+abgespielt, während die folgenden Sätze im Hintergrund erzeugt werden. Mit open_stream()
+beginnt das schon, während das LLM den Rest der Antwort noch schreibt. Die Wiedergabe
 läuft direkt im Prozess über sounddevice (kein externer Player, kein Anlauf), und
 stop() greift innerhalb von ~100 ms.
 
@@ -13,7 +14,7 @@ import logging
 import queue
 import re
 import threading
-from typing import List, Optional
+from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -46,6 +47,27 @@ def split_sentences(text: str, min_len: int = 30) -> List[str]:
     return merged or ([text.strip()] if text.strip() else [])
 
 
+def take_sentences(buffer: str, min_len: int = 30, first: bool = False) -> Tuple[List[str], str]:
+    """Für wachsenden Text: fertige Sätze abtrennen, den unfertigen Rest zurückgeben.
+
+    Ein Satz gilt erst als fertig, wenn der nächste schon begonnen hat (sonst ist „3.“ in „3.5“
+    nicht von einem Satzende zu unterscheiden). Kurze Sätze warten wie bei split_sentences auf den
+    nächsten – außer dem ersten (`first`), der für eine schnelle Reaktion sofort raus darf.
+    """
+    parts = _SENTENCE_SPLIT.split(buffer)
+    rest = parts.pop()
+    done: List[str] = []
+    pending = ""
+    for part in parts:
+        pending = f"{pending} {part.strip()}".strip()
+        if pending and (len(pending) >= min_len or (first and not done)):
+            done.append(pending)
+            pending = ""
+    if pending:
+        rest = f"{pending} {rest.lstrip()}"
+    return done, rest
+
+
 def synthesize_pcm(text: str, sample_rate: int = EDGE_SAMPLE_RATE) -> Optional[np.ndarray]:
     """Edge-TTS → PCM (int16, mono) im Speicher. None bei Fehler (z.B. offline)."""
     try:
@@ -72,6 +94,102 @@ def _trim_trailing_silence(pcm: np.ndarray, sample_rate: int, threshold: int = 3
     return pcm[:end]
 
 
+class _Utterance:
+    """Eine Äußerung, deren Sätze nach und nach dazukommen können (add, dann finish)."""
+
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self._sentences: List[str] = []
+        self._finished = False
+        self._cond = threading.Condition()
+
+    @property
+    def stopped(self) -> bool:
+        return self.stop_event.is_set()
+
+    def add(self, sentence: str):
+        with self._cond:
+            self._sentences.append(sentence)
+            self._cond.notify_all()
+
+    def finish(self):
+        with self._cond:
+            self._finished = True
+            self._cond.notify_all()
+
+    def stop(self):
+        self.stop_event.set()
+        with self._cond:
+            self._cond.notify_all()
+
+    def sentences(self) -> Iterator[str]:
+        """Liefert alle Sätze der Reihe nach und wartet auf neue, bis finish() oder stop()."""
+        i = 0
+        while True:
+            with self._cond:
+                while i >= len(self._sentences) and not self._finished and not self.stopped:
+                    self._cond.wait(0.2)
+                if self.stopped or i >= len(self._sentences):
+                    return
+                sentence = self._sentences[i]
+            i += 1
+            yield sentence
+
+    def full_text(self) -> str:
+        """Wartet auf finish() (oder stop()) und gibt den ganzen Text zurück."""
+        return " ".join(self.sentences())
+
+
+class SpeechStream:
+    """Liest Text vor, der noch entsteht (LLM-Streaming): feed() mit Textstücken, am Ende close().
+
+    Unterbricht eine andere Ausgabe (z.B. eine Rückfrage per speak()) diese Äußerung, beginnt
+    der nächste Satz eine neue. Nach VoiceEngine.stop() wird nichts mehr vorgelesen.
+    """
+
+    def __init__(self, engine: "VoiceEngine", listen_for_interrupt: bool = True):
+        self.engine = engine
+        self.listen_for_interrupt = listen_for_interrupt
+        self.cancelled = False
+        self._buffer = ""
+        self._first = True
+        self._closed = False
+        self._utterance: Optional[_Utterance] = None
+        self._lock = threading.Lock()
+
+    def feed(self, text: str):
+        with self._lock:
+            if self._closed or self.cancelled or not text:
+                return
+            self._buffer += text
+            sentences, self._buffer = take_sentences(self._buffer, first=self._first)
+            for sentence in sentences:
+                self._say(sentence)
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            rest, self._buffer = self._buffer.strip(), ""
+            if rest and not self.cancelled:
+                self._say(rest)
+            if self._utterance is not None:
+                self._utterance.finish()
+
+    def _say(self, sentence: str):
+        cleaned = self.engine.clean_text_for_speech(sentence)
+        if not cleaned:
+            return
+        self._first = False
+        if self._utterance is None or self._utterance.stopped:
+            self._utterance = self.engine._start_utterance(self.listen_for_interrupt)
+            if self._utterance is None:  # Sprachausgabe aus
+                return
+        self._utterance.add(cleaned)
+
+
 class VoiceEngine:
     BARGE_IN_THRESHOLD = max(0.035, getattr(config, "BARGE_IN_THRESHOLD", 0.06))
 
@@ -80,7 +198,8 @@ class VoiceEngine:
         self.voice = platform_utils.default_voice()
         self.label = platform_utils.voice_label()
         self._speaking = False
-        self._current: Optional[threading.Event] = None  # Stop-Event der laufenden Äußerung
+        self._current: Optional[_Utterance] = None  # laufende Äußerung
+        self._stream: Optional[SpeechStream] = None  # zuletzt geöffneter SpeechStream
         self._process = None  # System-TTS-Prozess (Fallback)
         self._lock = threading.Lock()
         if self.enabled and config.TTS_ENGINE == "edge":
@@ -103,9 +222,17 @@ class VoiceEngine:
         return self._speaking or (proc is not None and proc.poll() is None)
 
     def stop(self):
+        """Bricht die Ausgabe ab – auch Sätze, die ein offener SpeechStream noch liefern würde."""
+        with self._lock:
+            if self._stream is not None:
+                self._stream.cancelled = True
+        self._halt()
+
+    def _halt(self):
+        """Beendet die laufende Äußerung (ein offener SpeechStream darf danach neu ansetzen)."""
         with self._lock:
             if self._current is not None:
-                self._current.set()
+                self._current.stop()
             proc = self._process
             self._process = None
             self._end_speaking()
@@ -118,33 +245,55 @@ class VoiceEngine:
             platform_utils.cleanup_process(proc)
 
     def speak(self, text: str, listen_for_interrupt: bool = True, block: bool = False):
+        """Liest einen fertigen Text vor. Eine laufende Ausgabe wird dabei unterbrochen."""
         if not self.enabled:
             return
-        self.stop()
         cleaned = self.clean_text_for_speech(text)
         if not cleaned:
+            self._halt()
             return
-        stop_event = threading.Event()
+        utterance = self._start_utterance(listen_for_interrupt)
+        if utterance is None:
+            return
+        for sentence in split_sentences(cleaned):
+            utterance.add(sentence)
+        utterance.finish()
+        if block and utterance.thread is not None:
+            utterance.thread.join()
+
+    def open_stream(self, listen_for_interrupt: bool = True) -> SpeechStream:
+        """Für Antworten, die noch entstehen: Sätze werden vorgelesen, sobald sie fertig sind.
+        Ein vorher geöffneter Stream wird beendet."""
+        self.stop()
+        stream = SpeechStream(self, listen_for_interrupt)
         with self._lock:
-            self._current = stop_event
-            self._speaking = True
-            orb.state("speaking")
-        worker = threading.Thread(target=self._run, args=(cleaned, stop_event, listen_for_interrupt), daemon=True)
-        worker.start()
-        if block:
-            worker.join()
+            self._stream = stream
+        return stream
 
     # ── Intern ───────────────────────────────────────────────────────────────
 
-    def _run(self, text: str, stop_event: threading.Event, listen_for_interrupt: bool):
+    def _start_utterance(self, listen_for_interrupt: bool) -> Optional[_Utterance]:
+        if not self.enabled:
+            return None
+        self._halt()
+        utterance = _Utterance()
+        with self._lock:
+            self._current = utterance
+            self._speaking = True
+            orb.state("speaking")
+        utterance.thread = threading.Thread(target=self._run, args=(utterance, listen_for_interrupt), daemon=True)
+        utterance.thread.start()
+        return utterance
+
+    def _run(self, utterance: _Utterance, listen_for_interrupt: bool):
         try:
             if config.TTS_ENGINE == "edge" and sd is not None:
-                if self._run_edge(text, stop_event, listen_for_interrupt) or stop_event.is_set():
+                if self._run_edge(utterance, listen_for_interrupt) or utterance.stopped:
                     return
-            self._run_system(text, stop_event, listen_for_interrupt)
+            self._run_system(utterance, listen_for_interrupt)
         finally:
             with self._lock:
-                if self._current is stop_event:  # nicht schon von einer neuen Äußerung abgelöst
+                if self._current is utterance:  # nicht schon von einer neuen Äußerung abgelöst
                     self._end_speaking()
 
     def _end_speaking(self):
@@ -154,9 +303,9 @@ class VoiceEngine:
             orb.state("idle")
         self._speaking = False
 
-    def _run_edge(self, text: str, stop_event: threading.Event, listen_for_interrupt: bool) -> bool:
+    def _run_edge(self, utterance: _Utterance, listen_for_interrupt: bool) -> bool:
         """Satzweise Pipeline: synthetisieren im Hintergrund, abspielen sobald der erste Satz da ist."""
-        sentences = split_sentences(text)
+        stop_event = utterance.stop_event
         q: "queue.Queue" = queue.Queue(maxsize=3)
         device = platform_utils.default_output_device()
         rate = platform_utils.output_sample_rate(device) or EDGE_SAMPLE_RATE
@@ -175,9 +324,7 @@ class VoiceEngine:
             return False
 
         def producer():
-            for sentence in sentences:
-                if stop_event.is_set():
-                    break
+            for sentence in utterance.sentences():  # wartet auf Sätze, die noch geschrieben werden
                 pcm = synthesize_pcm(sentence, rate)
                 if pcm is None:
                     log.warning("Edge-TTS: Satz nicht synthetisiert: %r", sentence[:60])
@@ -193,7 +340,16 @@ class VoiceEngine:
             abandoned.set()
 
     def _play_queue(self, q, rate, device, stop_event, listen_for_interrupt) -> bool:
-        first = q.get()
+        def next_item():
+            # Beim Streaming kann der nächste Satz auf sich warten lassen; nach stop() kommt keiner mehr
+            while True:
+                try:
+                    return q.get(timeout=0.2)
+                except queue.Empty:
+                    if stop_event.is_set():
+                        return None
+
+        first = next_item()
         if first is None or first is _FAIL:
             return False  # Edge nicht erreichbar → Systemstimme
 
@@ -207,7 +363,7 @@ class VoiceEngine:
                 while item is not None and not stop_event.is_set():
                     if item is not _FAIL:
                         self._write_pcm(out, item, stop_event, chunk=rate // 30)
-                    item = q.get()
+                    item = next_item()
         except Exception:
             log.warning("Wiedergabe über Ausgabegerät %r fehlgeschlagen", device, exc_info=True)
             return stop_event.is_set()  # Ausgabegerät-Problem → Fallback nur, wenn nicht gestoppt
@@ -224,7 +380,12 @@ class VoiceEngine:
             orb.pcm_level(piece, "tts")
             out.write(piece)
 
-    def _run_system(self, text: str, stop_event: threading.Event, listen_for_interrupt: bool):
+    def _run_system(self, utterance: _Utterance, listen_for_interrupt: bool):
+        # Systemstimme (Ersatz) am Stück: Ein Prozess pro Satz hätte spürbare Pausen (v.a. SAPI)
+        stop_event = utterance.stop_event
+        text = utterance.full_text()
+        if not text or stop_event.is_set():
+            return
         proc = platform_utils.speak_system_process(text, self.voice)
         if proc is None:
             return
