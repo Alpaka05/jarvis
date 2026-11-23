@@ -98,6 +98,7 @@ class Hud(AgentListener):
         self._urls: set = set()  # Links, die an die Oberfläche gingen – nur die darf sie öffnen lassen
         self._ids = itertools.count(1)
         self._tts_wanted = True
+        self._busy = False  # läuft gerade eine Anfrage? (agent.busy ist in turn_finished noch True)
 
     # ── Aufbau ───────────────────────────────────────────────────────────────
 
@@ -156,7 +157,7 @@ class Hud(AgentListener):
             status.update(
                 provider=agent.provider.describe() if agent.provider else "",
                 fallback=agent.fallback.describe() if agent.fallback else "",
-                busy=agent.busy,
+                busy=self._busy,
                 cost=agent.cost_of(usage) if usage.calls else None,
                 usage=agent.usage_summary(usage) if usage.calls else "",
                 untrusted=agent.has_untrusted_content(),
@@ -191,6 +192,7 @@ class Hud(AgentListener):
         }
         with self._lock:
             self._turns.append(entry)
+            self._busy = True
         self._remember_urls(turn.query)
         self.emit({"type": "turn.start", "id": turn.id, "query": turn.query})
         self.push_status()
@@ -235,6 +237,7 @@ class Hud(AgentListener):
                     text=turn.text, sources=turn.sources, done=True, error=turn.error,
                     cancelled=turn.cancelled, usage=turn.usage,
                 )
+            self._busy = False
         self._remember_urls(turn.text)
         for source in turn.sources:
             self._urls.add(source["url"])

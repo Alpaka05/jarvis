@@ -1,0 +1,96 @@
+/* Dashboard: dunkle HUD-Optik in den Farben des Orbs (Cyan = Jarvis, Bernstein = denkt nach). */
+:root {
+  --bg: #05090d;
+  --bg-2: #0a141c;
+  --panel: rgba(12, 26, 36, 0.62);
+  --panel-solid: #0b1821;
+  --line: rgba(79, 216, 255, 0.14);
+  --line-strong: rgba(79, 216, 255, 0.4);
+  --text: #e2f4fb;
+  --muted: #86a8b7;
+  --dim: #54727f;
+  --accent: #4fd8ff;
+  --accent-soft: rgba(79, 216, 255, 0.12);
+  --amber: #ffb547;
+  --red: #ff6b7a;
+  --green: #5ee2a0;
+  --radius: 10px;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  background: radial-gradient(ellipse at 50% 38%, #0e202c, var(--bg) 68%) fixed, var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--sans);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { height: 100%; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+button:disabled { cursor: default; opacity: 0.45; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* Kleine Großbuchstaben-Beschriftung, wie auf den Ringen des Orbs */
+.label {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.muted { color: var(--muted); }
+.dim { color: var(--dim); }
+.num { font-variant-numeric: tabular-nums; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.chip:hover { border-color: var(--line-strong); }
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--muted);
+}
+.icon-btn:hover:not(:disabled) { color: var(--text); background: var(--accent-soft); }
+.icon-btn.on { color: var(--accent); }
+
+/* Dünne Rollbalken, die zum dunklen Hintergrund passen */
+* { scrollbar-width: thin; scrollbar-color: rgba(79, 216, 255, 0.22) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(79, 216, 255, 0.2); border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
