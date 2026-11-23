@@ -69,6 +69,10 @@ class BaseTool:
         prompt = self.confirmation_prompt(**kwargs)
         return Policy(Risk.CONFIRM, prompt) if prompt else Policy()
 
+    def available(self) -> bool:
+        """False blendet das Tool für die nächste Anfrage aus (z.B. display ohne verbundene Oberfläche)."""
+        return True
+
     def to_schema(self) -> Dict[str, Any]:
         return {
             "name": self.name,

@@ -20,6 +20,7 @@ import numpy as np
 
 from config import config
 from core import orb, platform_utils
+from core.sources import strip_citations
 
 log = logging.getLogger(__name__)
 
@@ -211,7 +212,8 @@ class VoiceEngine:
 
     @staticmethod
     def clean_text_for_speech(text: str) -> str:
-        clean = re.sub(r"https?://\S+", "", text)
+        clean = strip_citations(text)  # „[3]“ ist ein Beleg für die Oberfläche, kein Text
+        clean = re.sub(r"https?://\S+", "", clean)
         clean = re.sub(r"[*#_`\[\]>|]", "", clean)
         clean = re.sub(r":[a-z_]+:", "", clean)  # :emoji_codes:
         clean = re.sub(r"[\U0001F300-\U0001FAFF☀-➿]", "", clean)  # Emojis
@@ -226,6 +228,11 @@ class VoiceEngine:
         with self._lock:
             if self._stream is not None:
                 self._stream.cancelled = True
+        self._halt()
+
+    def interrupt(self):
+        """Bricht nur die laufende Äußerung ab (z.B. eine vorgelesene Rückfrage); die Antwort, die
+        ein offener SpeechStream noch liefert, wird danach weiter vorgelesen."""
         self._halt()
 
     def _halt(self):

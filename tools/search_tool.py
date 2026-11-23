@@ -54,7 +54,7 @@ def blocked_reason(url: str) -> Optional[str]:
 class SearchTool(BaseTool):
     name = "web_search"
     description = (
-        "Internet-Recherche. action=search für allgemeine Websuche (Fakten, Wetter, Produkte), "
+        "Internet-Recherche. action=search für allgemeine Websuche (Fakten, Produkte, Aktuelles), "
         "action=news für aktuelle Nachrichten der letzten Tage, action=read_url um den Textinhalt einer "
         "bestimmten Webseite zu lesen (z.B. einen Treffer vertiefen). Liefert Titel, URL und Kurzbeschreibung."
     )
@@ -72,6 +72,19 @@ class SearchTool(BaseTool):
         },
         "required": ["action"],
     }
+
+    def __init__(self):
+        self.sources = None  # SourceRegistry des Agenten: Treffer bekommen gesprächsweite Nummern
+
+    def use_sources(self, registry):
+        self.sources = registry
+
+    def _number(self, index: int, url: str, title: str, snippet: str = "") -> str:
+        """Beleg-Marke eines Treffers: „[7]“ aus dem Register, ohne Register die laufende Nummer."""
+        if self.sources is None:
+            return f"{index}."
+        n = self.sources.add(url, title, snippet)
+        return f"[{n}]" if n else "–"  # ohne URL (z.B. Kurzantwort) nichts zum Belegen
 
     # ── Backends ─────────────────────────────────────────────────────────────
 
@@ -133,7 +146,8 @@ class SearchTool(BaseTool):
                 continue
             label = "Nachrichten" if news else "Suchergebnisse"
             lines = [
-                f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}".rstrip() for i, r in enumerate(results, 1)
+                f"{self._number(i, r['url'], r['title'], r['snippet'])} {r['title']}\n   {r['url']}\n   {r['snippet']}".rstrip()
+                for i, r in enumerate(results, 1)
             ]
             return ToolResult.ok(f"{label} für '{query}' ({name}):\n" + "\n".join(lines), data=results)
 
@@ -171,7 +185,11 @@ class SearchTool(BaseTool):
         if not text.strip():
             return ToolResult.fail("Seite enthält keinen auslesbaren Text (vermutlich per JavaScript gerendert).")
         truncated = " …[gekürzt]" if len(text) > MAX_PAGE_CHARS else ""
-        return ToolResult.ok(f"{title}\n{url}\n\n{text[:MAX_PAGE_CHARS]}{truncated}", data={"title": title, "url": url})
+        n = self.sources.add(url, title, text[:300]) if self.sources is not None else None
+        mark = f"[{n}] " if n else ""
+        return ToolResult.ok(
+            f"{mark}{title}\n{url}\n\n{text[:MAX_PAGE_CHARS]}{truncated}", data={"title": title, "url": url}
+        )
 
     def _download(self, url: str, ua: str) -> tuple:
         """Lädt eine Seite begrenzt. Weiterleitungen werden einzeln geprüft (blocked_reason), damit

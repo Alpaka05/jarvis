@@ -204,6 +204,32 @@ class SpotifyTool(BaseTool):
             data={"track": item["name"], "artists": artists, "is_playing": pb.get("is_playing"), "device": device},
         )
 
+    def now_playing(self) -> Optional[Dict[str, Any]]:
+        """Für das Dashboard: was gerade läuft – ohne Nebenwirkungen (startet keine App, öffnet kein
+        Login). None, wenn Spotify nicht eingerichtet oder noch nicht verknüpft ist."""
+        be = self.backend()
+        if be == "applescript":
+            return {"text": self._apple_status().output, "controls": True}
+        if be != "web" or not self.is_linked():
+            return None
+        pb = self._client().current_playback()
+        if not pb or not pb.get("item"):
+            return {"playing": False, "track": "", "controls": True}
+        item = pb["item"]
+        images = sorted((item.get("album") or {}).get("images") or [], key=lambda i: i.get("width") or 0)
+        art = next((i["url"] for i in images if (i.get("width") or 0) >= 200), images[-1]["url"] if images else "")
+        return {
+            "playing": bool(pb.get("is_playing")),
+            "track": item.get("name", ""),
+            "artists": ", ".join(a["name"] for a in item.get("artists", [])),
+            "album": (item.get("album") or {}).get("name", ""),
+            "device": (pb.get("device") or {}).get("name", ""),
+            "progress_ms": pb.get("progress_ms"),
+            "duration_ms": item.get("duration_ms"),
+            "art_url": art,
+            "controls": True,
+        }
+
     def _web(self, action: str, kw: Dict[str, Any]) -> ToolResult:
         if not self.is_linked():
             return ToolResult.fail(
