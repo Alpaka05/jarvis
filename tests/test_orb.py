@@ -276,3 +276,35 @@ def test_window_exits_when_jarvis_dies(tmp_path):
         assert _wait_for(port_file, lines=2)[1] == "eof"
     finally:
         jarvis.kill()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Shell-Skript als Ersatz-Fenster")
+def test_dashboard_is_opened_at_start_or_later_over_the_lifeline(tmp_path):
+    """Mit hud=True startet das Fenster gleich mit Dashboard; läuft es schon, bekommt es den Befehl
+    als Zeile auf stdin – derselben Leitung, deren Ende das Fenster beendet."""
+    pytest.importorskip("websockets")
+    out = tmp_path / "out"
+    body = (
+        f'echo "start hud=$JARVIS_HUD shortcut=$JARVIS_HUD_SHORTCUT" > "{out}"\n'
+        f'while read line; do echo "cmd $line" >> "{out}"; done\necho eof >> "{out}"\n'
+    )
+    binary = _fake_binary(tmp_path / "jarvis-orb", out, body)
+    bus = OrbEvents()
+    window = OrbWindow(bus, log_path=tmp_path / "orb.log")
+    window.shortcut = "CmdOrCtrl+Shift+J"
+    try:
+        assert window.command("hud") is False  # läuft noch nicht
+        assert window.open(port=0, binary=binary) == (True, "Orb gestartet.")
+        assert _wait_for(out)[0] == "start hud= shortcut=CmdOrCtrl+Shift+J"
+        assert window.open(binary=binary, hud=True) == (True, "Dashboard geöffnet.")
+        assert window.command("overlay") is True
+        assert _wait_for(out, lines=3)[1:] == ["cmd hud", "cmd overlay"]
+        window.close()
+        assert _wait_for(out, lines=4)[3] == "eof"
+
+        out.unlink()
+        assert window.open(port=0, binary=binary, hud=True) == (True, "Dashboard geöffnet.")
+        assert _wait_for(out)[0].startswith("start hud=1 ")
+    finally:
+        window.close()
+        bus.stop()

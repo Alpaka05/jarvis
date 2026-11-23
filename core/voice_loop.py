@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from typing import Callable, Optional
 
@@ -21,6 +22,7 @@ from rich.panel import Panel
 from config import config
 from core import orb, platform_utils
 from core.agent import UNTRUSTED_NOTE, JarvisAgent
+from core.hud import hud
 from core.mic import MicError, MicStream
 from core.voice import VoiceEngine
 from core.voice_input import VoiceInputListener, rms
@@ -142,6 +144,8 @@ class VoiceLoop:
         self.on_wake = on_wake
         self.running = False
         self._stream = None  # offenes Mikrofon, für Rückfragen mitten in einer Anfrage
+        self._thread: Optional[threading.Thread] = None  # Thread, in dem run() läuft
+        self._other_confirm = None  # Rückfrage-Weg für Anfragen, die nicht aus dem Sprachmodus kommen
         self.ack_style = config.ACK_STYLE
         self.ack_voice = AckVoice(config.ACK_PHRASE) if self.ack_style in ("voice", "both") and config.TTS_ENABLED else None
 
@@ -168,7 +172,10 @@ class VoiceLoop:
         self.agent.voice_mode = True
         # Rückfragen (Mail senden, Türschloss …) per Sprache statt über die Tastatur
         keyboard_confirm = getattr(self.agent, "confirm", None)
-        self.agent.confirm = self._confirm_by_voice
+        self._thread = threading.current_thread()
+        self._other_confirm = keyboard_confirm
+        self.agent.confirm = self._confirm
+        hud.set_voice_loop(self)
         orb.state("idle")
         failures = 0
         try:
@@ -204,6 +211,7 @@ class VoiceLoop:
             self.agent.confirm = keyboard_confirm
             self._stream = None
             self.agent.voice_mode = False
+            hud.set_voice_loop(None)
             orb.state("idle")
 
     def stop(self):
@@ -308,8 +316,29 @@ class VoiceLoop:
         words = "".join(ch for ch in (text or "").lower() if ch.isalpha() or ch == " ").split()
         return not any(w in cls.NO_WORDS for w in words) and any(w in cls.YES_WORDS for w in words)
 
+    def _confirm(self, prompt: str) -> bool:
+        """Rückfragen dorthin, wo die Anfrage herkam: Gesprochenes per Sprache, alles andere (z.B.
+        in der Oberfläche Getipptes, während der Sprachmodus lauscht) auf dem bisherigen Weg."""
+        if threading.current_thread() is not self._thread and self._other_confirm is not None:
+            return self._other_confirm(prompt)
+        return self._confirm_by_voice(prompt)
+
     def _confirm_by_voice(self, prompt: str) -> bool:
-        """Liest die Rückfrage vor und wartet auf „ja“ oder „nein“. Keine oder unklare Antwort = Nein."""
+        """Liest die Rückfrage vor und wartet auf „ja“ oder „nein“. Keine oder unklare Antwort = Nein.
+        Ist ein Dashboard offen, zeigt es die Rückfrage ebenfalls – ein Klick dort zählt auch."""
+        pending = hud.confirm_begin(prompt, voice=True)
+        confirmed = False
+        try:
+            confirmed = self._ask_by_voice(prompt, pending)
+            if pending is not None and pending.answered:
+                confirmed = bool(pending.result)
+                self.console.print("[green]Bestätigt (Klick).[/green]" if confirmed else "[dim]Abgelehnt (Klick).[/dim]")
+            return confirmed
+        finally:
+            hud.confirm_end(pending, confirmed, "ui" if pending is not None and pending.answered else "voice")
+
+    def _ask_by_voice(self, prompt: str, pending=None) -> bool:
+        clicked = (lambda: pending.answered) if pending is not None else (lambda: False)
         stream = self._stream
         lines = prompt.strip().splitlines()
         summary = (lines[0] if lines else "Diese Aktion ausführen").rstrip(" .:?")
@@ -321,7 +350,12 @@ class VoiceLoop:
         question = f"{summary}. Soll ich das machen?"
         if UNTRUSTED_NOTE in prompt:
             question += " Achtung, das könnte aus einer Webseite oder Mail stammen."
-        self.voice.speak(question, listen_for_interrupt=False, block=True)
+        self.voice.speak(question, listen_for_interrupt=False)
+        while self.voice.is_speaking():
+            if clicked():  # Antwort kam schon per Klick: nicht zu Ende vorlesen
+                self.voice.interrupt()
+                return False
+            time.sleep(0.05)
         # Was sich während Denken und Vorlesen im Puffer gesammelt hat (inkl. Echo), verwerfen
         try:
             if hasattr(stream, "flush"):
@@ -330,8 +364,10 @@ class VoiceLoop:
         except MicError:
             return False
         orb.state("listening")
-        recording = self.listener.record_from_stream(stream, start_timeout=6.0)
+        recording = self.listener.record_from_stream(stream, start_timeout=6.0, abort=clicked)
         orb.state("thinking")
+        if clicked():
+            return False  # der Aufrufer nimmt die Antwort aus dem Dashboard
         if recording is None:
             self.console.print("[dim]Keine Antwort – nicht ausgeführt.[/dim]")
             return False

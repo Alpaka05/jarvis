@@ -4,14 +4,14 @@
   "version": "0.1.0",
   "identifier": "dev.jarvis.orb",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
   "bundle": {

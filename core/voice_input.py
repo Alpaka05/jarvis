@@ -13,7 +13,7 @@ from __future__ import annotations
 import io
 import logging
 import wave
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -106,6 +106,7 @@ class VoiceInputListener:
         silence_limit: Optional[float] = None,
         start_timeout: Optional[float] = None,
         threshold: Optional[float] = None,
+        abort: Optional[Callable[[], bool]] = None,
     ) -> Optional[np.ndarray]:
         """Nimmt aus einem offenen Stream auf, bis nach dem Sprechen eine Pause folgt.
 
@@ -113,6 +114,7 @@ class VoiceInputListener:
             silence_limit: Sekunden Stille nach Sprache, die den Satz beenden (Standard aus Konstruktor).
             start_timeout: Sekunden, die auf Sprechbeginn gewartet wird (None = max_duration).
             threshold: Lautstärke-Schwelle für den RMS-Fallback (None = aus Umgebung messen).
+            abort: wird laufend gefragt; True bricht die Aufnahme ab (z.B. Antwort kam per Klick).
         Returns:
             int16-Array mit der Aufnahme oder None, wenn nichts gesprochen wurde.
         """
@@ -131,6 +133,8 @@ class VoiceInputListener:
         speech_start = None
         elapsed = 0.0
         while True:
+            if abort is not None and abort():
+                return None
             chunk, _ = stream.read(self.chunk_size)
             elapsed += len(chunk) / self.sample_rate
             orb.pcm_level(chunk, "mic")

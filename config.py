@@ -134,6 +134,16 @@ class Config:
     ORB_ENABLED: bool = _bool("ORB_ENABLED", False)  # WebSocket-Server für das Orb-Fenster starten
     ORB_PORT: int = _int("ORB_PORT", "8765")  # lauscht nur auf 127.0.0.1
 
+    # ── Oberfläche (Dashboard-Fenster) ───────────────────────────────────────
+    HUD_ON_START: bool = _bool("HUD_ON_START", False)  # wie `main.py --ui`: Oberfläche statt Terminal
+    # Live-Anzeigen in dieser Reihenfolge; was nicht eingerichtet ist, bleibt von selbst weg
+    HUD_WIDGETS: str = _env("HUD_WIDGETS", "weather,calendar,homeassistant,spotify,mail", allow_empty=True).lower()
+    # Entitäten für die Smart-Home-Anzeige, z.B. light.wohnzimmer,climate.bad (leer = Lichter und Heizungen)
+    HUD_HA_ENTITIES: str = _env("HUD_HA_ENTITIES")
+    # Tastenkürzel Orb ↔ Dashboard, z.B. CmdOrCtrl+Shift+J; "aus" schaltet es ab
+    HUD_SHORTCUT: str = _env("HUD_SHORTCUT", "CmdOrCtrl+Shift+J")
+    WEATHER_LOCATION: str = _env("WEATHER_LOCATION")  # Standardort für Wetter-Tool und -Anzeige, z.B. Kiel
+
     # ─── Bildschirm ──────────────────────────────────────────────────────
     SCREEN_ENABLED: bool = _bool("SCREEN_ENABLED", True)  # screen-Tool: Screenshot auf Nachfrage ans LLM
 

@@ -1,13 +1,17 @@
-"""Ereignisse für den Orb (schwebendes Overlay-Fenster).
+"""Ereignisse für den Orb (schwebendes Overlay-Fenster) und die Oberfläche (HUD).
 
-Jarvis startet einen kleinen WebSocket-Server auf 127.0.0.1 (ORB_PORT, Standard 8765). Das
-Orb-Fenster verbindet sich als Client und bekommt JSON-Nachrichten:
+Jarvis startet einen kleinen WebSocket-Server auf 127.0.0.1 (ORB_PORT, Standard 8765). Die
+Fenster verbinden sich als Client und bekommen JSON-Nachrichten. An alle gehen:
 
     {"type": "state", "state": "idle" | "wake" | "listening" | "thinking" | "speaking"}
     {"type": "level", "source": "mic" | "tts", "value": 0.0–1.0}      höchstens ~30 pro Sekunde
     {"type": "tool", "name": "spotify"}                                 kurz einblenden, Zustand bleibt
     {"type": "error", "message": "Nicht verstanden"}                    kurz aufblitzen, Zustand bleibt
     {"type": "transcript", "role": "user" | "assistant", "text": "…"}  für Untertitel
+
+Die Oberfläche meldet sich mit ?client=hud an. Nur sie bekommt die ausführlichen Ereignisse
+(Antworttext beim Entstehen, Tool-Aufrufe, Quellen, Karten, Widgets, Rückfragen – siehe core/hud.py)
+und nur ihre Nachrichten (Eingaben, Antworten auf Rückfragen) werden ausgewertet.
 
 Verbindungen brauchen das Token aus ORB_TOKEN bzw. data/orb.token (?token=…) – sonst könnte
 jede Webseite im Browser per ws://127.0.0.1 mitlesen, was gesagt und geantwortet wird.
@@ -35,16 +39,19 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
+
+from core.sources import strip_citations
 
 log = logging.getLogger(__name__)
 
 IDLE_DELAY = 0.3
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 TOKEN_FILE = DATA_DIR / "orb.token"
+MAX_INCOMING_BYTES = 64_000  # Nachrichten der Oberfläche sind klein (Eingabetext, Klicks)
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 
 
@@ -75,6 +82,9 @@ def normalize_rms(value: float, floor_db: float = -50.0, ceil_db: float = -10.0)
     return min(1.0, max(0.0, (db - floor_db) / (ceil_db - floor_db)))
 
 
+HUD = object()  # Zieladresse „alle verbundenen Oberflächen“
+
+
 class OrbEvents:
     def __init__(self, level_hz: float = 30.0, idle_delay: float = IDLE_DELAY, token_file: Optional[Path] = None):
         self.level_interval = 1.0 / level_hz
@@ -85,8 +95,13 @@ class OrbEvents:
         self.address = ""
         self._server = None
         self._clients: set = set()
+        self._hud_clients: set = set()  # Teilmenge von _clients: Oberflächen (?client=hud)
+        # Oberfläche: Nachrichten von ihr und die Begrüßung (aktueller Stand) für neue Fenster
+        self.on_message: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.hello: Optional[Callable[[], List[Dict[str, Any]]]] = None
+        self.on_hud_change: Optional[Callable[[bool], None]] = None
         self._lock = threading.Lock()
-        self._queue: "queue.Queue" = queue.Queue(maxsize=256)
+        self._queue: "queue.Queue" = queue.Queue(maxsize=2048)
         self._state = "idle"
         self._idle_at: Optional[float] = None
         self._last_level = 0.0
@@ -101,7 +116,9 @@ class OrbEvents:
             from websockets.sync.server import serve
 
             self.token = self.token or load_or_create_token(self.token_file)
-            self._server = serve(self._handle, host, port, process_request=self._check_token)
+            self._server = serve(
+                self._handle, host, port, process_request=self._check_token, max_size=MAX_INCOMING_BYTES
+            )
         except Exception as e:  # Paket fehlt, Port belegt, …
             log.warning("Orb-Server auf Port %s nicht gestartet: %s", port, e)
             return f"Orb-Server nicht gestartet: {e}"
@@ -125,6 +142,11 @@ class OrbEvents:
         """True, wenn mindestens ein Orb-Fenster verbunden ist."""
         return self.enabled and bool(self._clients)
 
+    @property
+    def hud_active(self) -> bool:
+        """True, wenn mindestens eine Oberfläche (HUD) verbunden ist."""
+        return self.enabled and bool(self._hud_clients)
+
     def _check_token(self, connection, request):
         """Verbindungen ohne passendes Token abweisen (None = annehmen)."""
         given = parse_qs(urlsplit(request.path).query).get("token", [""])[0]
@@ -133,18 +155,56 @@ class OrbEvents:
         return connection.respond(403, "Falsches oder fehlendes Token.\n")
 
     def _handle(self, ws):
+        is_hud = parse_qs(urlsplit(ws.request.path).query).get("client", [""])[0] == "hud"
         with self._lock:
             self._clients.add(ws)
-            hello = {"type": "state", "state": self._state}
-        self._put(hello, target=ws)
+            first_hud = is_hud and not self._hud_clients
+            if is_hud:
+                self._hud_clients.add(ws)
+            hello = [{"type": "state", "state": self._state}]
+        if is_hud and self.hello is not None:
+            try:
+                hello += self.hello()
+            except Exception:
+                log.exception("Begrüßung für die Oberfläche fehlgeschlagen")
+        for msg in hello:
+            self._put(msg, target=ws)
+        if first_hud:
+            self._hud_changed(True)
         try:
-            for _ in ws:  # Nachrichten des Orbs werden (noch) nicht ausgewertet
-                pass
+            for raw in ws:
+                if is_hud:  # der Orb selbst sendet nichts Auswertbares
+                    self._receive(raw)
         except Exception:
             pass
         finally:
             with self._lock:
                 self._clients.discard(ws)
+                self._hud_clients.discard(ws)
+                last_hud = is_hud and not self._hud_clients
+            if last_hud:
+                self._hud_changed(False)
+
+    def _receive(self, raw):
+        if self.on_message is None:
+            return
+        try:
+            msg = json.loads(raw)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
+            return
+        try:
+            self.on_message(msg)
+        except Exception:
+            log.exception("Nachricht der Oberfläche (%s) nicht verarbeitet", msg.get("type"))
+
+    def _hud_changed(self, connected: bool):
+        if self.on_hud_change is not None:
+            try:
+                self.on_hud_change(connected)
+            except Exception:
+                log.exception("on_hud_change fehlgeschlagen")
 
     # ── Ereignisse ───────────────────────────────────────────────────────────
 
@@ -184,7 +244,13 @@ class OrbEvents:
         self._put({"type": "error", "message": message})
 
     def transcript(self, role: str, text: str):
-        self._put({"type": "transcript", "role": role, "text": text})
+        # Untertitel ohne Beleg-Marken; die Oberfläche bekommt den Text mit Quellen über turn.end
+        self._put({"type": "transcript", "role": role, "text": strip_citations(text)})
+
+    def hud(self, msg: Dict[str, Any]):
+        """Ereignis nur für verbundene Oberflächen (alles außer Zustand, Pegel, Untertiteln)."""
+        if self._hud_clients:
+            self._put(msg, target=HUD)
 
     # ── Versand (eigener Thread, damit Aufrufer nie blockieren) ──────────────
 
@@ -194,7 +260,7 @@ class OrbEvents:
         try:
             self._queue.put_nowait((msg, target))
         except queue.Full:
-            pass  # Orb hängt – lieber Ereignisse verwerfen als Jarvis aufhalten
+            pass  # Fenster hängt – lieber Ereignisse verwerfen als Jarvis aufhalten
 
     def _send_loop(self):
         while self.enabled:
@@ -218,7 +284,10 @@ class OrbEvents:
     def _deliver(self, msg: Dict[str, Any], target):
         data = json.dumps(msg, ensure_ascii=False)
         with self._lock:
-            clients = [target] if target is not None else list(self._clients)
+            if target is HUD:
+                clients = list(self._hud_clients)
+            else:
+                clients = [target] if target is not None else list(self._clients)
         for ws in clients:
             try:
                 ws.send(data)
@@ -230,6 +299,7 @@ class OrbEvents:
 
 ORB_TARGET_DIR = Path(__file__).resolve().parent.parent / "orb" / "src-tauri" / "target"
 ORB_LOG = DATA_DIR / "orb.log"
+BUILD_HINT = "cd orb && npm install && npm run build && cd src-tauri && cargo build --release"
 STARTUP_CHECK_SECONDS = 0.8  # beendet sich das Fenster so schnell, ist der Start gescheitert
 
 
@@ -251,19 +321,29 @@ class OrbWindow:
         self.events = events
         self.log_path = log_path
         self._proc: Optional[subprocess.Popen] = None
+        self.shortcut: Optional[str] = None  # Tastenkürzel Orb ↔ Dashboard (HUD_SHORTCUT)
         atexit.register(self.close)
 
     @property
     def running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    def open(self, port: int = 8765, binary: Optional[Path] = None) -> Tuple[bool, str]:
-        """Startet Server (falls nötig) und Fenster. Gibt (Erfolg, Meldung) zurück."""
-        if self.running or self.events.active:
+    def open(self, port: int = 8765, binary: Optional[Path] = None, hud: bool = False) -> Tuple[bool, str]:
+        """Startet Server (falls nötig) und Fenster. Gibt (Erfolg, Meldung) zurück.
+
+        Mit `hud` öffnet sich die Oberfläche (Dashboard) statt nur des Orbs – auch nachträglich,
+        wenn das Fenster schon läuft."""
+        if self.running:
+            if hud:
+                return (True, "Dashboard geöffnet.") if self.command("hud") else (False, "Das Fenster reagiert nicht.")
             return True, "Der Orb läuft schon."
+        if self.events.active:
+            if hud and not self.events.hud_active:
+                return False, "Der Orb wurde nicht von Jarvis gestartet – das Dashboard bitte über das Tray-Symbol öffnen."
+            return True, "Das Dashboard läuft schon." if hud else "Der Orb läuft schon."
         binary = binary or find_window_binary()
         if binary is None:
-            return False, "Orb-Fenster noch nicht gebaut: cd orb/src-tauri && cargo build --release"
+            return False, f"Orb-Fenster noch nicht gebaut: {BUILD_HINT}"
         if not self.events.enabled:
             error = self.events.start(port=port)
             if error and port:  # Port belegt → freien nehmen, das Fenster bekommt ihn mitgeteilt
@@ -272,6 +352,10 @@ class OrbWindow:
                 return False, error
         actual_port = self.events.address.rsplit(":", 1)[-1]
         env = {**os.environ, "ORB_PORT": actual_port, "ORB_TOKEN": self.events.token, "JARVIS_ORB_CHILD": "1"}
+        if hud:
+            env["JARVIS_HUD"] = "1"
+        if self.shortcut is not None:  # None = Standard des Fensters, "" = kein Tastenkürzel
+            env["JARVIS_HUD_SHORTCUT"] = self.shortcut
         # Eigene Prozessgruppe: Strg+C im Terminal (Frage/Sprachmodus abbrechen) trifft sonst auch den Orb
         if sys.platform.startswith("win"):
             detach: Dict[str, Any] = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
@@ -290,11 +374,24 @@ class OrbWindow:
         try:
             code = self._proc.wait(timeout=STARTUP_CHECK_SECONDS)
         except subprocess.TimeoutExpired:
-            log.info("Orb-Fenster gestartet (pid %s, Port %s)", self._proc.pid, actual_port)
-            return True, "Orb gestartet."
+            log.info("Orb-Fenster gestartet (pid %s, Port %s, hud=%s)", self._proc.pid, actual_port, hud)
+            return True, "Dashboard geöffnet." if hud else "Orb gestartet."
         self._proc = None
         log.warning("Orb-Fenster beendete sich sofort (Code %s), siehe %s", code, self.log_path)
         return False, f"Orb-Fenster hat sich sofort beendet (Code {code}). {self._log_tail()}".strip()
+
+    def command(self, name: str) -> bool:
+        """Schickt dem laufenden Fenster einen Befehl über die Lebensader (eine Zeile auf stdin):
+        „hud“ zeigt das Dashboard, „overlay“ blendet es wieder aus."""
+        proc = self._proc
+        if proc is None or proc.poll() is not None or proc.stdin is None:
+            return False
+        try:
+            proc.stdin.write(name.encode("ascii") + b"\n")
+            proc.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
 
     def _log_tail(self, lines: int = 3) -> str:
         try:
@@ -349,5 +446,6 @@ pcm_level = bus.pcm_level
 tool = bus.tool
 error = bus.error
 transcript = bus.transcript
+hud = bus.hud
 open_window = window.open
 close_window = window.shut

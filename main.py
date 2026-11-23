@@ -1,6 +1,7 @@
 import json
 import logging
 import sys
+import time
 
 from rich.console import Console
 from rich.markup import escape
@@ -10,10 +11,13 @@ from rich.prompt import Confirm, InvalidResponse, Prompt
 from config import config
 from core import orb, platform_utils
 from core.agent import JarvisAgent
+from core.hud import Session, hud
 from core.llm import ToolCall
 from core.log import rotate_native_log, setup_logging
 from core.voice import VoiceEngine
+from core.widgets import WidgetHub, default_widgets
 from tools.base import ToolResult
+from tools.display_tool import DisplayTool
 
 # Windows-Konsolen (v.a. beim Umleiten) nutzen sonst cp1252 und scheitern an Emojis/Boxzeichen
 if sys.platform.startswith("win"):
@@ -99,6 +103,8 @@ def show_help():
 - [cyan]v[/cyan] / [cyan]voice[/cyan]   einmalige Spracheingabe über das Mikrofon
 - [cyan]orb[/cyan] / [cyan]orb aus[/cyan]  schwebenden Orb starten / schließen (geht auch per Sprache:
                  "Schalte den Orb ein"; schließt sich mit Jarvis)
+- [cyan]dashboard[/cyan]    Oberfläche öffnen: Orb, Gespräch, Quellen, Wetter, Smart Home …
+                 (ganz ohne Terminal: Jarvis mit --ui starten)
 - [cyan]reset[/cyan]        Gesprächsverlauf löschen
 - [cyan]spotify login[/cyan]  Spotify einmalig mit deinem Konto verknüpfen
 - [cyan]kosten[/cyan]       Token-Verbrauch und geschätzte Kosten dieser Sitzung
@@ -179,19 +185,32 @@ def on_tool_result(call: ToolCall, result: ToolResult):
     console.print(f"  [dim]{icon} {escape(first_line)}[/dim]")
 
 
+def make_voice_loop(agent: JarvisAgent, voice: VoiceEngine):
+    from core.voice_loop import VoiceLoop
+
+    return VoiceLoop(
+        agent,
+        voice,
+        console=console,
+        follow_up_seconds=config.FOLLOW_UP_SECONDS,
+        barge_in_threshold=config.BARGE_IN_THRESHOLD,
+    )
+
+
+def print_sources(agent: JarvisAgent, response: str):
+    """Die in der Antwort belegten Quellen ([n]) unter der Antwort auflisten."""
+    for source in agent.sources.cited(response):
+        console.print(f"  [dim]\\[{source['n']}] {escape(source['title'])} – {escape(source['url'])}[/dim]")
+
+
 def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
     """Startet den Wake-Word-Sprachmodus. Gibt False zurück, wenn er nicht verfügbar ist."""
+    if hud.voice_loop is not None or hud.voice_loading:
+        console.print("[dim]Der Sprachmodus läuft schon (über die Oberfläche gestartet).[/dim]")
+        return True
     try:
-        from core.voice_loop import VoiceLoop
-
         with console.status("[dim]Lade Wake-Word-Modell ...[/dim]"):
-            loop = VoiceLoop(
-                agent,
-                voice,
-                console=console,
-                follow_up_seconds=config.FOLLOW_UP_SECONDS,
-                barge_in_threshold=config.BARGE_IN_THRESHOLD,
-            )
+            loop = make_voice_loop(agent, voice)
     except Exception as e:
         console.print(f"[bold red]Sprachmodus nicht verfügbar:[/bold red] {escape(str(e))}")
         console.print("[dim]Mikrofon angeschlossen? Pakete installiert (uv sync)?[/dim]")
@@ -201,15 +220,68 @@ def run_voice_mode(agent: JarvisAgent, voice: VoiceEngine) -> bool:
     return True
 
 
+def on_notice(message: str):
+    console.print(f"[yellow]⚠ {escape(message)}[/yellow]")
+    hud.notice(message, "warning")
+
+
+def run_ui(agent: JarvisAgent, voice: VoiceEngine, session: Session, voice_mode: bool):
+    """Jarvis ohne Terminal-Eingabe: Bedient wird über das Dashboard-Fenster (und per Sprache)."""
+    ok, message = orb.open_window(port=config.ORB_PORT, hud=True)
+    if ok:
+        console.print(f"[green]{message}[/green] [dim]Bedienung im Fenster; Strg+C hier beendet Jarvis.[/dim]")
+    else:
+        console.print(f"[bold red]{escape(message)}[/bold red]")
+        if not orb.bus.enabled and orb.start(port=config.ORB_PORT):
+            orb.start(port=0)
+        if orb.bus.enabled:
+            port = orb.bus.address.rsplit(":", 1)[-1]
+            console.print(
+                "[dim]Ersatzweise im Browser: in orb/ `npm install && npm run dev` starten und dann öffnen:[/dim]\n"
+                f"  http://localhost:5173/hud.html?port={port}&token={orb.bus.token}",
+                soft_wrap=True,  # die Adresse nicht umbrechen, sonst lässt sie sich nicht kopieren
+            )
+    if voice_mode:
+        session.start_voice()
+    try:
+        while not ok or orb.window.running:  # Fenster über das Tray beendet → Jarvis endet mit
+            time.sleep(0.5)
+        console.print("[dim]Fenster geschlossen – Jarvis beendet sich.[/dim]")
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]Bis später![/bold yellow]")
+    finally:
+        voice.stop()
+        session.close()
+
+
 def main():
-    voice_mode = config.VOICE_MODE_ON_START or "--voice" in sys.argv[1:]
+    args = sys.argv[1:]
+    voice_mode = config.VOICE_MODE_ON_START or "--voice" in args
+    ui_mode = (config.HUD_ON_START or "--ui" in args) and "--terminal" not in args
     agent = JarvisAgent(
         confirm=confirm_action,
         on_tool_call=on_tool_call,
         on_tool_result=on_tool_result,
-        on_notice=lambda m: console.print(f"[yellow]⚠ {m}[/yellow]"),
+        on_notice=on_notice,
     )
     voice = VoiceEngine()
+
+    # Oberfläche: bekommt alles mit, sobald sich ein Dashboard verbindet – in beiden Betriebsarten
+    widgets = WidgetHub(orb.bus, default_widgets(agent.tools))
+    hud.attach(agent, voice, widgets)
+    agent.add_tool(DisplayTool(hud))
+    session = Session(
+        hud,
+        agent,
+        voice,
+        terminal_confirm=None if ui_mode else confirm_action,  # mit --ui gibt es keine Tastatur-Rückfragen
+        voice_loop_factory=lambda: make_voice_loop(agent, voice),
+    )
+    agent.confirm = session.confirm
+    orb.window.shortcut = "" if config.HUD_SHORTCUT.lower() in ("aus", "off", "none") else config.HUD_SHORTCUT
+    widgets.start()
+    session.start()
+
     if config.ORB_ENABLED:
         orb_error = orb.start(port=config.ORB_PORT)
         if orb_error:
@@ -218,6 +290,9 @@ def main():
 
     log.info("Jarvis gestartet (%s, LLM: %s)", config.platform_name, agent.provider.describe() if agent.provider else "keins")
     print_status(agent, voice)
+    if ui_mode:
+        run_ui(agent, voice, session, voice_mode)
+        return
     if voice_mode:
         try:
             run_voice_mode(agent, voice)
@@ -245,6 +320,7 @@ def main():
                 continue
             if cmd in ("reset", "neu", "clear"):
                 agent.reset()
+                hud.reset()
                 console.print("[dim]Gesprächsverlauf gelöscht.[/dim]")
                 continue
             if cmd in ("spotify login", "spotify verknüpfen"):
@@ -259,6 +335,10 @@ def main():
                 facts = agent.memory.list_facts() if agent.memory else []
                 body = "\n".join(f"[dim]#{f['id']}[/dim] [cyan]{escape(f['category'])}[/cyan]  {escape(f['content'])}" for f in facts) or "[dim]Noch leer.[/dim]"
                 console.print(Panel(body, title="[bold magenta]Gedächtnis[/bold magenta]", border_style="magenta"))
+                continue
+            if cmd in ("dashboard", "hud", "oberfläche", "ui"):
+                ok, message = orb.open_window(port=config.ORB_PORT, hud=True)
+                console.print(f"[{'green' if ok else 'red'}]{message}[/]")
                 continue
             if cmd in ("orb", "orb an", "orb aus"):
                 ok, message = orb.close_window() if cmd == "orb aus" else orb.open_window(port=config.ORB_PORT)
@@ -300,6 +380,7 @@ def main():
                 speech.close()
 
             console.print(Panel(escape(response), title="[bold green]Jarvis[/bold green]", border_style="green"))
+            print_sources(agent, response)
             if agent.last_usage.calls:
                 console.print(f"  [dim]{agent.usage_summary(agent.last_usage)}[/dim]")
             orb.transcript("assistant", response)

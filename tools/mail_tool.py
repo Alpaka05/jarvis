@@ -4,8 +4,8 @@ import smtplib
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formataddr, getaddresses
-from typing import List, Optional, Tuple
+from email.utils import formataddr, getaddresses, parseaddr
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import config
 from tools.base import BaseTool, Policy, ToolResult
@@ -123,6 +123,40 @@ class MailTool(BaseTool):
             return ToolResult.ok(f"{len(results)} {label} E-Mails:\n{formatted}", data=results)
         except Exception as e:
             return ToolResult.fail(f"Fehler beim Abrufen der E-Mails: {e}")
+
+    def unread_summary(self, max_count: int = 4) -> Optional[Dict[str, Any]]:
+        """Für das Dashboard: Anzahl ungelesener Mails und die neuesten Absender/Betreffs. Lädt nur
+        Kopfzeilen und markiert nichts als gelesen. None ohne konfiguriertes Postfach."""
+        if not self._check_config():
+            return None
+        server = config.IMAP_SERVER or "imap." + config.EMAIL_ACCOUNT.split("@")[-1]
+        mail = imaplib.IMAP4_SSL(server, config.IMAP_PORT, timeout=15)
+        try:
+            mail.login(config.EMAIL_ACCOUNT, config.EMAIL_PASSWORD)
+            mail.select("inbox", readonly=True)
+            status, messages = mail.search(None, "UNSEEN")
+            ids = messages[0].split() if status == "OK" and messages and messages[0] else []
+            items = []
+            for e_id in reversed(ids[-max_count:]):
+                _, msg_data = mail.fetch(e_id.decode(), "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                for part in msg_data:
+                    if not isinstance(part, tuple):
+                        continue
+                    msg = email.message_from_bytes(part[1])
+                    name, addr = parseaddr(self._decode(msg.get("From", "")))
+                    items.append(
+                        {
+                            "from": name or addr or "Unbekannt",
+                            "subject": self._decode(msg.get("Subject", "")) or "Kein Betreff",
+                            "date": msg.get("Date", ""),
+                        }
+                    )
+            return {"unread": len(ids), "items": items}
+        finally:
+            try:
+                mail.logout()
+            except Exception:
+                pass
 
     # ── Senden ───────────────────────────────────────────────────────────────
 

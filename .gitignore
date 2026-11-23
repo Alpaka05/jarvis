@@ -80,3 +80,7 @@ Thumbs.db
 data/*.db-wal
 data/*.db-shm
 data/*.mp3
+
+# Oberfläche (Vite): Abhängigkeiten und Build-Ausgabe
+orb/node_modules/
+orb/dist/

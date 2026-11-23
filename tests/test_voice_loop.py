@@ -296,3 +296,56 @@ def test_voice_confirmation_without_microphone_is_no(monkeypatch):
     loop, voice, _ = _confirm_loop(monkeypatch, "ja")
     loop._stream = None
     assert loop._confirm_by_voice("Senden") is False
+
+
+class FakeHud:
+    """Dashboard-Seite einer Rückfrage: merkt sich Beginn und Ende, kann einen Klick vorgeben."""
+
+    def __init__(self, click=None):
+        self.click = click
+        self.ended = []
+
+    def confirm_begin(self, prompt, voice=False):
+        from core.hud import PendingConfirm
+
+        pending = PendingConfirm("q1", prompt, voice)
+        if self.click is not None:
+            pending.result = self.click
+            pending.event.set()
+        return pending
+
+    def confirm_end(self, pending, result, via):
+        self.ended.append((result, via))
+
+
+def test_voice_confirmation_is_mirrored_to_dashboard_and_click_wins(monkeypatch):
+    # gesprochen wird „ja“, aber im Dashboard wurde schon „Nein“ geklickt
+    loop, voice, _ = _confirm_loop(monkeypatch, "ja")
+    fake = FakeHud(click=False)
+    monkeypatch.setattr(voice_loop_module, "hud", fake)
+    assert loop._confirm_by_voice("Senden") is False
+    assert fake.ended == [(False, "ui")]
+
+    loop, voice, _ = _confirm_loop(monkeypatch, None)  # niemand sagt etwas, Klick auf „Ja“
+    fake = FakeHud(click=True)
+    monkeypatch.setattr(voice_loop_module, "hud", fake)
+    assert loop._confirm_by_voice("Senden") is True and fake.ended == [(True, "ui")]
+
+    loop, voice, _ = _confirm_loop(monkeypatch, "ja")  # ohne Klick zählt die Stimme
+    fake = FakeHud()
+    monkeypatch.setattr(voice_loop_module, "hud", fake)
+    assert loop._confirm_by_voice("Senden") is True and fake.ended == [(True, "voice")]
+
+
+def test_confirmations_for_requests_from_elsewhere_keep_their_own_way(monkeypatch):
+    import threading
+
+    loop, voice, _ = _confirm_loop(monkeypatch, "ja")
+    asked = []
+    loop._other_confirm = lambda prompt: asked.append(prompt) or False
+    loop._thread = threading.Thread()  # der Sprachmodus läuft in einem anderen Thread als dieser Test
+    assert loop._confirm("Getippt in der Oberfläche") is False
+    assert asked == ["Getippt in der Oberfläche"] and voice.spoken == []
+
+    loop._thread = threading.current_thread()  # Anfrage kam per Sprache → Rückfrage per Sprache
+    assert loop._confirm("Gesprochen") is True and voice.spoken

@@ -61,4 +61,8 @@ class ScreenTool(BaseTool):
             return ToolResult.fail(str(e))
         answer = self.describe(shot.data, shot.mime, f"Frage des Nutzers: {question}")
         where = f"Bildschirm {shot.monitor} von {shot.monitors}" if shot.monitors > 1 else "Bildschirm"
-        return ToolResult.ok(f"Was auf dem {where} zu sehen ist:\n{answer.strip() or '(keine Beschreibung)'}")
+        return ToolResult.ok(
+            f"Was auf dem {where} zu sehen ist:\n{answer.strip() or '(keine Beschreibung)'}",
+            # Für die Oberfläche (zeigt, was Jarvis gesehen hat); ins Gespräch kommt nur der Text
+            data={"image": shot.data, "mime": shot.mime},
+        )
