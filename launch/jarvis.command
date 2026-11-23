@@ -11,8 +11,11 @@ done
 if [ -z "$UV" ]; then
   echo "uv nicht gefunden – Installation: https://docs.astral.sh/uv/"
 else
-  "$UV" run python main.py
+  "$UV" run python main.py "$@"
 fi
+
+# Mit Oberfläche (--ui) gibt es im Terminal nichts mehr zu tun: Fenster zu, fertig
+case " $* " in *" --ui "*) exit 0 ;; esac
 
 # Nach "exit" in einer normalen Shell im Jarvis-Ordner weitermachen statt "[Prozess beendet]"
 exec "$SHELL" -l

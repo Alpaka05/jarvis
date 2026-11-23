@@ -2,7 +2,6 @@ import json
 import logging
 import sys
 import time
-from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
@@ -235,10 +234,13 @@ def run_ui(agent: JarvisAgent, voice: VoiceEngine, session: Session, voice_mode:
         console.print(f"[bold red]{escape(message)}[/bold red]")
         if not orb.bus.enabled and orb.start(port=config.ORB_PORT):
             orb.start(port=0)
-        page = Path(__file__).parent / "orb" / "dist" / "hud.html"
-        if orb.bus.enabled and page.is_file():
+        if orb.bus.enabled:
             port = orb.bus.address.rsplit(":", 1)[-1]
-            console.print(f"[dim]Ersatzweise im Browser öffnen:[/dim] {page.as_uri()}?port={port}&token={orb.bus.token}")
+            console.print(
+                "[dim]Ersatzweise im Browser: in orb/ `npm install && npm run dev` starten und dann öffnen:[/dim]\n"
+                f"  http://localhost:5173/hud.html?port={port}&token={orb.bus.token}",
+                soft_wrap=True,  # die Adresse nicht umbrechen, sonst lässt sie sich nicht kopieren
+            )
     if voice_mode:
         session.start_voice()
     try:

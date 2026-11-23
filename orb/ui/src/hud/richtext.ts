@@ -10,7 +10,7 @@ export type Inline =
 export type Block = { t: "p"; inline: Inline[] } | { t: "list"; ordered: boolean; items: Inline[][] };
 
 const INLINE =
-  /\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*)\*|`([^`\n]+)`|(https?:\/\/[^\s<>"')\]]+)|\[(\d{1,4}(?:\s*[,;]\s*\d{1,4})*)\]/g;
+  /\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*)\*|`([^`\n]+)`|(https?:\/\/[^\s<>"')\]}]+)|\[(\d{1,4}(?:\s*[,;]\s*\d{1,4})*)\]/g;
 const BULLET = /^\s*([-•*]|\d{1,2}[.)])\s+(.*)$/;
 
 export function inline(text: string): Inline[] {
