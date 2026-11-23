@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Das Orb-Fenster darf Ereignisse aus dem Tray-Menü empfangen.",
-  "windows": ["orb"],
-  "permissions": ["core:default"]
+  "description": "Orb und Dashboard dürfen Ereignisse aus dem Tray-Menü empfangen.",
+  "windows": [
+    "orb",
+    "hud"
+  ],
+  "permissions": [
+    "core:default"
+  ]
 }
