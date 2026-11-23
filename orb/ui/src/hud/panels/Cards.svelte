@@ -1,6 +1,6 @@
 <script lang="ts">
   // „Anzeige“: Karten, die Jarvis mit dem display-Tool zeigt. Neueste oben.
-  import type { Card } from "../../lib/protocol";
+  import type { Card } from "../protocol";
   import Icon from "../Icon.svelte";
   import RichText from "../RichText.svelte";
   import { hud, openUrl, send } from "../store.svelte";

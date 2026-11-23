@@ -1,6 +1,6 @@
 <script lang="ts">
   // Text mit einfacher Formatierung, Links und Beleg-Marken. Alles wird als Text eingesetzt (kein HTML).
-  import type { Source } from "../lib/protocol";
+  import type { Source } from "./protocol";
   import { blocks, hostOf, type Inline } from "./richtext";
   import { openUrl } from "./store.svelte";
 

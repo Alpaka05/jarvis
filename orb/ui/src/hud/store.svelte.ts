@@ -1,5 +1,5 @@
 // Zustand des Dashboards und die Verbindung zu Jarvis (ws://127.0.0.1, siehe core/hud.py).
-import type { Card, Confirm, OrbState, Status, Turn } from "../lib/protocol";
+import type { Card, Confirm, OrbState, Status, Turn } from "./protocol";
 
 const params = new URLSearchParams(location.search);
 const PORT = Number((window as any).ORB_PORT || params.get("port") || 8765);

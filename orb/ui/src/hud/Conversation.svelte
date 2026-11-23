@@ -1,7 +1,7 @@
 <script lang="ts">
   // Gespräch: Verlauf, Rückfragen und die Eingabezeile – ersetzt die Terminal-Eingabe.
   import { tick } from "svelte";
-  import type { Turn } from "../lib/protocol";
+  import type { Turn } from "./protocol";
   import Icon from "./Icon.svelte";
   import RichText from "./RichText.svelte";
   import { hud, last, openUrl, send } from "./store.svelte";
